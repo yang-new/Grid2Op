@@ -6,16 +6,16 @@
 # SPDX-License-Identifier: MPL-2.0
 # This file is part of Grid2Op, Grid2Op a testbed platform to model sequential decision making in power systems.
 import os
-import sys
-import numpy as np
 import warnings
 import time
 import imageio
 
+import argparse
+
 from grid2op.Exceptions import Grid2OpException
 from grid2op.PlotGrid.PlotMatplot import PlotMatplot
-from grid2op.Exceptions.PlotExceptions import PyGameQuit
 from grid2op.Episode.EpisodeData import EpisodeData
+
 
 class EpisodeReplay(object):
     """
@@ -48,7 +48,7 @@ class EpisodeReplay(object):
         to save tha log of the agent.
 
     episode_data: :class:`grid2op.EpisodeData.EpisodeData`, optional
-        The last data of the episode inspected.
+        The last data of the episode inspected.replay_cli
     """
     def __init__(self, agent_path):
         if not os.path.exists(agent_path):
@@ -56,7 +56,9 @@ class EpisodeReplay(object):
         self.agent_path = agent_path
         self.episode_data = None
 
-    def replay_episode(self, episode_id, fps=2.0, gif_name=None, display=True):
+    def replay_episode(self, episode_id, fps=2.0, gif_name=None,
+                       display=True, start_step=0, end_step=-1,
+                       resolution=(1280, 720)):
         """
         When called, this function will start the display of the episode in a "mini movie" format.
 
@@ -72,6 +74,16 @@ class EpisodeReplay(object):
         gif_name: ``str``
             If provided, a .gif file is saved in the episode folder with the name :gif_name:. 
             The .gif extension is appened by this function
+
+        start_step: ``int``
+            Default to 0. The step at which to start generating the gif
+
+        end_step: ``int``
+            Default to -1. The step at which to stop generating the gif.
+            Set to -1 to specify no limit
+
+        resolution: ``tuple``
+            Defaults to (1280, 720). The resolution to use for the gif.
         """
         # Check args
         path_ep = os.path.join(self.agent_path, episode_id)
@@ -83,7 +95,10 @@ class EpisodeReplay(object):
         all_obs = [el for el in self.episode_data.observations]
 
         # Create a plotter
-        plot_runner = PlotMatplot(self.episode_data.observation_space)
+        width, height = resolution
+        plot_runner = PlotMatplot(self.episode_data.observation_space,
+                                  width=width, height=height,
+                                  load_name=False, gen_name=False)
 
         # Some vars for gif export if enabled
         frames = []
@@ -94,7 +109,13 @@ class EpisodeReplay(object):
         # Render loop
         figure = None
         time_per_frame = 1.0 / fps
-        for obs in all_obs:
+        for step, obs in enumerate(all_obs):
+            # Skip up to start_step
+            if step < start_step:
+                continue
+            # Terminate if reached end_step
+            if end_step > 0 and step >= end_step:
+                break
             # Get a timestamp for current frame
             start_time = time.time()
 
@@ -102,7 +123,7 @@ class EpisodeReplay(object):
             fig = plot_runner.plot_obs(observation=obs, figure=figure, redraw=True)
             if figure is None and display:
                 fig.show()
-            else:
+            elif display:
                 fig.canvas.draw()
 
             # Store figure for re-use
@@ -122,20 +143,23 @@ class EpisodeReplay(object):
                     time.sleep(wait_time)
 
         # Export all frames as gif if enabled
-        if gif_name is not None:
-            imageio.mimwrite(gif_path, frames, fps=fps)
-            # Try to compress
+        if gif_name is not None and len(frames) > 0:
             try:
-                from pygifsicle import optimize
-                optimize(gif_path)
-            except:
-                warn_msg = "Failed to optimize .GIF size, but gif is still saved:\n" \
-                           "Install dependencies to reduce size by ~3 folds\n" \
-                           "apt-get install gifsicle && pip3 install pygifsicle"
-                warnings.warn(warn_msg)
+                imageio.mimwrite(gif_path, frames, fps=fps)
+                # Try to compress
+                try:
+                    from pygifsicle import optimize
+                    optimize(gif_path, options=["-w", "--no-conserve-memory"])
+                except:
+                    warn_msg = "Failed to optimize .GIF size, but gif is still saved:\n" \
+                               "Install dependencies to reduce size by ~3 folds\n" \
+                               "apt-get install gifsicle && pip3 install pygifsicle"
+                    warnings.warn(warn_msg)
+            except Exception as e:
+                warnings.warn("Impossible to save gif with error :\n{}".format(e))
 
-def replay_cli():    
-    import argparse
+
+def episode_replay_cli():
     parser = argparse.ArgumentParser(description="EpisodeReplay")
     parser.add_argument("--agent_path", required=True, type=str)
     parser.add_argument("--episode_id", required=True, type=str)
@@ -143,12 +167,20 @@ def replay_cli():
     parser.add_argument("--fps", required=False, default=2.0, type=float)
     parser.add_argument("--gif_name", required=False, default=None, type=str)
     args = parser.parse_args()
+    return args
+
+
+def main(args=None):
+    if args is None:
+        args = episode_replay_cli()
     er = EpisodeReplay(args.agent_path)
     er.replay_episode(args.episode_id,
                       fps=args.fps,
                       gif_name=args.gif_name,
                       display=args.display)
 
+
 # Dev / Test by running this file
 if __name__ == "__main__":
-    replay_cli()
+    args = episode_replay_cli()
+    main(args)

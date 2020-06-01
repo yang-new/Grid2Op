@@ -50,14 +50,10 @@ All of the above should allow to read back, and better understand the behaviour 
 :class:`grid2op.Agent.BaseAgent`, even though such utility functions have not been coded yet.
 """
 
-import datetime as dt
 import json
 import os
-import time
 
 import numpy as np
-import pandas as pd
-
 
 from grid2op.Exceptions import Grid2OpException, AmbiguousAction
 from grid2op.Action import ActionSpace
@@ -73,12 +69,12 @@ class EpisodeData:
     TIMES = "episode_times.json"
     OTHER_REWARDS = "other_rewards.json"
 
-    AG_EXEC_TIMES = "agent_exec_times.npy"
-    ACTIONS = "actions.npy"
-    ENV_ACTIONS = "env_modifications.npy"
-    OBSERVATIONS = "observations.npy"
-    LINES_FAILURES = "disc_lines_cascading_failure.npy"
-    REWARDS = "rewards.npy"
+    AG_EXEC_TIMES = "agent_exec_times.npz"
+    ACTIONS = "actions.npz"
+    ENV_ACTIONS = "env_modifications.npz"
+    OBSERVATIONS = "observations.npz"
+    LINES_FAILURES = "disc_lines_cascading_failure.npz"
+    REWARDS = "rewards.npz"
 
     def __init__(self, actions=None, env_actions=None, observations=None, rewards=None,
                  disc_lines=None, times=None,
@@ -87,15 +83,17 @@ class EpisodeData:
                  helper_action_env=None, path_save=None, disc_lines_templ=None,
                  logger=None, name=str(1), get_dataframes=None, other_rewards=[]):
 
-        self.actions = CollectionWrapper(actions, action_space, "actions")
-        self.observations = CollectionWrapper(observations, observation_space,
+        self.actions = CollectionWrapper(actions,
+                                         action_space,
+                                         "actions")
+        self.observations = CollectionWrapper(observations,
+                                              observation_space,
                                               "observations")
-
-        self.env_actions = CollectionWrapper(env_actions, helper_action_env,
+        self.env_actions = CollectionWrapper(env_actions,
+                                             helper_action_env,
                                              "env_actions")
         self.other_rewards = other_rewards
         self.observation_space = observation_space
-        self.helper_action_env = helper_action_env
         self.rewards = rewards
         self.disc_lines = disc_lines
         self.times = times
@@ -154,8 +152,14 @@ class EpisodeData:
                 logger.info(
                     "Creating path \"{}\" to save the episode {}".format(self.episode_path, self.name))
 
+    def get_actions(self):
+        return self.actions.collection
+
+    def get_observations(self):
+        return self.observations.collection
+
     def __len__(self):
-        return self.meta["chronics_max_timestep"]
+        return int(self.meta["chronics_max_timestep"])
 
     @classmethod
     def from_disk(cls, agent_path, name=str(1)):
@@ -163,7 +167,6 @@ class EpisodeData:
         if agent_path is None:
             # TODO: proper exception
             raise Grid2OpException("A path to an episode should be provided")
-
         episode_path = os.path.abspath(os.path.join(agent_path, name))
 
         try:
@@ -177,15 +180,15 @@ class EpisodeData:
                 other_rewards = json.load(fp=f)
 
             times = np.load(os.path.join(
-                episode_path, EpisodeData.AG_EXEC_TIMES))
-            actions = np.load(os.path.join(episode_path, EpisodeData.ACTIONS))
+                episode_path, EpisodeData.AG_EXEC_TIMES))["data"]
+            actions = np.load(os.path.join(episode_path, EpisodeData.ACTIONS))["data"]
             env_actions = np.load(os.path.join(
-                episode_path, EpisodeData.ENV_ACTIONS))
+                episode_path,EpisodeData.ENV_ACTIONS))["data"]
             observations = np.load(os.path.join(
-                episode_path, EpisodeData.OBSERVATIONS))
+                episode_path, EpisodeData.OBSERVATIONS))["data"]
             disc_lines = np.load(os.path.join(
-                episode_path, EpisodeData.LINES_FAILURES))
-            rewards = np.load(os.path.join(episode_path, EpisodeData.REWARDS))
+                episode_path, EpisodeData.LINES_FAILURES))["data"]
+            rewards = np.load(os.path.join(episode_path, EpisodeData.REWARDS))["data"]
 
         except FileNotFoundError as ex:
             raise Grid2OpException(f"EpisodeData file not found \n {str(ex)}")
@@ -207,7 +210,7 @@ class EpisodeData:
         if self.serialize:
             self.parameters = env.parameters.to_dict()
 
-    def set_meta(self, env, time_step, cum_reward):
+    def set_meta(self, env, time_step, cum_reward, seed):
         if self.serialize:
             self.meta = {}
             self.meta["chronics_path"] = "{}".format(
@@ -220,6 +223,10 @@ class EpisodeData:
             self.meta["env_type"] = "{}".format(type(env).__name__)
             self.meta["nb_timestep_played"] = time_step
             self.meta["cumulative_reward"] = cum_reward
+            if seed is None:
+                self.meta["env_seed"] = seed
+            else:
+                self.meta["env_seed"] = int(seed)
 
     def incr_store(self, efficient_storing, time_step, time_step_duration,
                    reward, env_act, act, obs, info):
@@ -303,18 +310,18 @@ class EpisodeData:
                 json.dump(obj=self.other_rewards, fp=f,
                           indent=4, sort_keys=True)
 
-            np.save(os.path.join(self.episode_path, EpisodeData.AG_EXEC_TIMES),
-                    self.times)
+            np.savez_compressed(os.path.join(self.episode_path, EpisodeData.AG_EXEC_TIMES),
+                    data=self.times)
             self.actions.save(
                 os.path.join(self.episode_path, EpisodeData.ACTIONS))
             self.env_actions.save(
                 os.path.join(self.episode_path, EpisodeData.ENV_ACTIONS))
             self.observations.save(
                 os.path.join(self.episode_path, EpisodeData.OBSERVATIONS))
-            np.save(os.path.join(
-                self.episode_path, EpisodeData.LINES_FAILURES), self.disc_lines)
-            np.save(os.path.join(self.episode_path,
-                                 EpisodeData.REWARDS), self.rewards)
+            np.savez_compressed(os.path.join(
+                self.episode_path, EpisodeData.LINES_FAILURES), data=self.disc_lines)
+            np.savez_compressed(os.path.join(self.episode_path,
+                                 EpisodeData.REWARDS), data=self.rewards)
 
 
 class CollectionWrapper:
@@ -414,4 +421,8 @@ class CollectionWrapper:
             self.collection = np.concatenate((self.collection, values.reshape(1, -1)))
 
     def save(self, path):
-        np.save(path, self.collection)
+        np.savez_compressed(path, data=self.collection)  # do not change keyword arguments
+
+
+if __name__ == "__main__":
+    pass

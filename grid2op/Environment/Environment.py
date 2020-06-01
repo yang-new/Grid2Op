@@ -5,13 +5,11 @@
 # you can obtain one at http://mozilla.org/MPL/2.0/.
 # SPDX-License-Identifier: MPL-2.0
 # This file is part of Grid2Op, Grid2Op a testbed platform to model sequential decision making in power systems.
-import numpy as np
 import os
 import copy
-import pdb
-import collections
+import warnings
 
-from grid2op.dtypes import dt_int, dt_float, dt_bool
+from grid2op.dtypes import dt_float
 from grid2op.Action import ActionSpace, BaseAction, TopologyAction, DontAct, CompleteAction
 from grid2op.Exceptions import *
 from grid2op.Observation import CompleteObservation, ObservationSpace, BaseObservation
@@ -114,6 +112,7 @@ class Environment(BaseEnv):
                  chronics_handler,
                  backend,
                  parameters,
+                 name="unknown",
                  names_chronics_to_backend=None,
                  actionClass=TopologyAction,
                  observationClass=CompleteObservation,
@@ -126,15 +125,21 @@ class Environment(BaseEnv):
                  tol_poly=1e-6,
                  opponent_action_class=DontAct,
                  opponent_class=BaseOpponent,
-                 opponent_init_budget=0
+                 opponent_init_budget=0,
+                 _raw_backend_class=None,
+                 with_forecast=True
                  ):
         BaseEnv.__init__(self,
-                           parameters=parameters,
-                           thermal_limit_a=thermal_limit_a,
-                           epsilon_poly=epsilon_poly,
-                           tol_poly=tol_poly,
-                           other_rewards=other_rewards)
-
+                         parameters=parameters,
+                         thermal_limit_a=thermal_limit_a,
+                         epsilon_poly=epsilon_poly,
+                         tol_poly=tol_poly,
+                         other_rewards=other_rewards,
+                         with_forecast=with_forecast)
+        if name == "unknown":
+            warnings.warn("It is NOT recommended to create an environment without \"make\" and EVEN LESS "
+                          "to use an environment without a name")
+        self.name = name
         # the voltage controler
         self.voltagecontrolerClass = voltagecontrolerClass
         self.voltage_controler = None
@@ -152,6 +157,10 @@ class Environment(BaseEnv):
         self.opponent_class = opponent_class
         self.opponent_init_budget = opponent_init_budget
 
+        if _raw_backend_class is None:
+            self._raw_backend_class = type(backend)
+        else:
+            _raw_backend_class = _raw_backend_class
         # for plotting
         self.init_backend(init_grid_path, chronics_handler, backend,
                           names_chronics_to_backend, actionClass, observationClass,
@@ -185,10 +194,8 @@ class Environment(BaseEnv):
                                    "and not an object (an instance of a class). "
                                    "It is currently \"{}\"".format(type(rewardClass)))
         if not issubclass(rewardClass, BaseReward):
-            raise Grid2OpException(
-                "Parameter \"rewardClass\" used to build the Environment should derived form the grid2op.BaseReward class, "
-                "type provided is \"{}\"".format(
-                    type(rewardClass)))
+            raise Grid2OpException("Parameter \"rewardClass\" used to build the Environment should derived form "
+                                   "the grid2op.BaseReward class, type provided is \"{}\"".format(type(rewardClass)))
         self.rewardClass = rewardClass
         self.actionClass = actionClass
         self.observationClass = observationClass
@@ -197,18 +204,17 @@ class Environment(BaseEnv):
         self.init_grid_path = os.path.abspath(init_grid_path)
 
         if not isinstance(backend, Backend):
-            raise Grid2OpException(
-                "Parameter \"backend\" used to build the Environment should derived form the grid2op.Backend class, "
-                "type provided is \"{}\"".format(
-                    type(backend)))
+            raise Grid2OpException( "Parameter \"backend\" used to build the Environment should derived form the "
+                                    "grid2op.Backend class, type provided is \"{}\"".format(type(backend)))
         self.backend = backend
         self.backend.load_grid(self.init_grid_path)  # the real powergrid of the environment
 
         self.backend.load_redispacthing_data(os.path.split(self.init_grid_path)[0])
         self.backend.load_grid_layout(os.path.split(self.init_grid_path)[0])
+        self.backend.set_env_name(self.name)
 
         self.backend.assert_grid_correct()
-        self.init_grid(backend)
+
         self._has_been_initialized()  # really important to include this piece of code!
 
         if self._thermal_limit_a is None:
@@ -253,19 +259,20 @@ class Environment(BaseEnv):
                     type(observationClass)))
 
         # action affecting the grid that will be made by the agent
-        self.helper_action_player = ActionSpace(gridobj=self.backend,
-                                                actionClass=actionClass,
-                                                legal_action=self.game_rules.legal_action)
+        self.helper_action_class = ActionSpace.init_grid(gridobj=self.backend)
+        self.helper_action_player = self.helper_action_class(gridobj=self.backend,
+                                                             actionClass=actionClass,
+                                                             legal_action=self.game_rules.legal_action)
 
         # action that affect the grid made by the environment.
-        self.helper_action_env = ActionSpace(gridobj=self.backend,
-                                             actionClass=CompleteAction,
-                                             legal_action=self.game_rules.legal_action)
-
-        self.helper_observation = ObservationSpace(gridobj=self.backend,
-                                                   observationClass=observationClass,
-                                                   rewardClass=rewardClass,
-                                                   env=self)
+        self.helper_action_env = self.helper_action_class(gridobj=self.backend,
+                                                          actionClass=CompleteAction,
+                                                          legal_action=self.game_rules.legal_action)
+        self.helper_observation_class = ObservationSpace.init_grid(gridobj=self.backend)
+        self.helper_observation = self.helper_observation_class(gridobj=self.backend,
+                                                                observationClass=observationClass,
+                                                                rewardClass=rewardClass,
+                                                                env=self)
 
         # handles input data
         if not isinstance(chronics_handler, ChronicsHandler):
@@ -305,6 +312,7 @@ class Environment(BaseEnv):
         # performs one step to load the environment properly (first action need to be taken at first time step after
         # first injections given)
         self._reset_maintenance()
+        self._reset_redispatching()
         do_nothing = self.helper_action_env({})
         *_, fail_to_start, info = self.step(do_nothing)
         if fail_to_start:
@@ -329,6 +337,7 @@ class Environment(BaseEnv):
 
         # reset everything to be consistent
         self._reset_vectors_and_timings()
+        # self._reset_redispatching()
 
     def _voltage_control(self, agent_action, prod_v_chronics):
         """
@@ -346,10 +355,11 @@ class Environment(BaseEnv):
             The voltages that has been specified in the chronics
 
         """
-        self.env_modification += self.voltage_controler.fix_voltage(self.current_obs,
-                                                                    agent_action,
-                                                                    self.env_modification,
-                                                                    prod_v_chronics)
+        volt_control_act = self.voltage_controler.fix_voltage(self.current_obs,
+                                                              agent_action,
+                                                              self.env_modification,
+                                                              prod_v_chronics)
+        return volt_control_act
 
     def set_chunk_size(self, new_chunk_size):
         """
@@ -452,12 +462,6 @@ class Environment(BaseEnv):
                       "Please install matplotlib or run pip install grid2op[optional]"
             raise Grid2OpException(err_msg) from None
 
-        if graph_layout is None:
-            # Grid layout must be ordered by keys in order to display correctly
-            # Apparently sub stations indexes to grid_layout key is in alphabetical order
-            graph_layout = collections.OrderedDict(sorted(self.helper_observation.grid_layout.items()))
-
-        self.helper_observation.grid_layout = graph_layout
         self.viewer = PlotMatplot(self.helper_observation)
         self.viewer_fig = None
         # Set renderer modes
@@ -484,6 +488,7 @@ class Environment(BaseEnv):
         if self._thermal_limit_a is not None:
             self.backend.set_thermal_limit(self._thermal_limit_a.astype(dt_float))
 
+        self._backend_action = self._backend_action_class()
         do_nothing = self.helper_action_env({})
         *_, fail_to_start, info = self.step(do_nothing)
         if fail_to_start:
@@ -491,7 +496,7 @@ class Environment(BaseEnv):
                                    "Available information are: {}".format(info))
 
         # test the backend returns object of the proper size
-        self.backend.assert_grid_correct_after_powerflow()
+        # self.backend.assert_grid_correct_after_powerflow()
 
     def add_text_logger(self, logger=None):
         """
@@ -509,32 +514,6 @@ class Environment(BaseEnv):
         self.logger = logger
         return self
 
-    def seed(self, seed=None):
-        """
-        Set the seed of this :class:`Environment` for a better control and to ease reproducible experiments.
-
-        This is not supported yet.
-
-        Parameters
-        ----------
-            seed: ``int``
-               The seed to set.
-
-        """
-        try:
-            seed = np.array(seed).astype(dt_int)
-        except Exception as e:
-            raise Grid2OpException("Impossible to seed with the seed provided. Make sure it can be converted to a"
-                                   "numpy 64 integer.")
-        # example from gym
-        # self.np_random, seed = seeding.np_random(seed)
-        # TODO make that more clean, see example of seeding @ https://github.com/openai/gym/tree/master/gym/utils
-        self.chronics_handler.seed(seed)
-        self.helper_observation.seed(seed)
-        self.helper_action_player.seed(seed)
-        self.helper_action_env.seed(seed)
-        return [seed]
-
     def reset(self):
         """
         Reset the environment to a clean state.
@@ -545,6 +524,7 @@ class Environment(BaseEnv):
 
         This method should be called only at the end of an episode.
         """
+        super().reset()
         self.chronics_handler.next_chronics()
         self.chronics_handler.initialize(self.backend.name_load, self.backend.name_gen,
                                          self.backend.name_line, self.backend.name_sub,
@@ -655,6 +635,8 @@ class Environment(BaseEnv):
         res["opponent_action_class"] = self.opponent_action_class
         res["opponent_class"] = self.opponent_class
         res["opponent_init_budget"] = self.opponent_init_budget
+        res["name"] = self.name
+        res["_raw_backend_class"] = self._raw_backend_class
         return res
 
     def get_params_for_runner(self):
@@ -690,7 +672,7 @@ class Environment(BaseEnv):
         res["legalActClass"] = self.legalActClass
         res["envClass"] = Environment
         res["gridStateclass"] = self.chronics_handler.chronicsClass
-        res["backendClass"] = type(self.backend)  # TODO
+        res["backendClass"] = self._raw_backend_class
         res["verbose"] = False
         dict_ = copy.deepcopy(self.chronics_handler.kwargs)
         if 'path' in dict_:
@@ -704,5 +686,6 @@ class Environment(BaseEnv):
         res["opponent_class"] = self.opponent_class
         res["opponent_init_budget"] = self.opponent_init_budget
         res["grid_layout"] = self.grid_layout
+        res["name_env"] = self.name
         # TODO make a test for that
         return res

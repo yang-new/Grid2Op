@@ -13,8 +13,9 @@ import copy
 import pdb
 import warnings
 
-from grid2op.tests.helper_path_test import HelperTests, PATH_DATA_TEST_PP
-
+import grid2op
+from grid2op.dtypes import dt_int
+from grid2op.tests.helper_path_test import HelperTests, PATH_DATA_TEST_PP, PATH_DATA_TEST
 from grid2op.Action import ActionSpace, CompleteAction
 from grid2op.Backend import PandaPowerBackend
 from grid2op.Parameters import Parameters
@@ -22,9 +23,20 @@ from grid2op.Chronics import ChronicsHandler
 from grid2op.Environment import Environment
 from grid2op.Exceptions import *
 from grid2op.Rules import RulesChecker
-from grid2op.MakeEnv import make_new
+from grid2op.MakeEnv import make
 from grid2op.Rules import AlwaysLegal
+from grid2op.Action._BackendAction import _BackendAction
+
+PATH_DATA_TEST_INIT = PATH_DATA_TEST
 PATH_DATA_TEST = PATH_DATA_TEST_PP
+
+
+class TestNames(unittest.TestCase):
+    def test_properNames(self):
+        with make(os.path.join(PATH_DATA_TEST_INIT, "5bus_example_diff_name")) as env:
+            obs = env.reset()
+            assert np.all(obs.name_load == ["tutu", "toto", "tata"])
+            assert np.all(env.name_load == ["tutu", "toto", "tata"])
 
 
 class TestLoadingCase(unittest.TestCase):
@@ -37,6 +49,7 @@ class TestLoadingCase(unittest.TestCase):
         path_matpower = PATH_DATA_TEST
         case_file = "test_case14.json"
         backend.load_grid(path_matpower, case_file)
+        backend.set_env_name("TestLoadingCase_env")
 
         assert backend.n_line == 20
         assert backend.n_gen == 5
@@ -81,6 +94,7 @@ class TestLoadingCase(unittest.TestCase):
         path_matpower = PATH_DATA_TEST
         case_file = "test_case14.json"
         backend.load_grid(path_matpower, case_file)
+        backend.set_env_name("TestLoadingCase_env2")
         backend.assert_grid_correct()
         backend.runpf()
         backend.assert_grid_correct_after_powerflow()
@@ -96,7 +110,11 @@ class TestLoadingBackendFunc(unittest.TestCase):
         self.tolvect = 1e-2
         self.tol_one = 1e-5
         self.game_rules = RulesChecker()
-        self.action_env = ActionSpace(gridobj=self.backend, legal_action=self.game_rules.legal_action)
+        self.backend.set_env_name("TestLoadingBackendFunc_env")
+        self.action_env_class = ActionSpace.init_grid(self.backend)
+        self.action_env = self.action_env_class(gridobj=self.backend, legal_action=self.game_rules.legal_action)
+        self.bkact_class = _BackendAction.init_grid(self.backend)
+
 
     # Cette méthode sera appelée après chaque test.
     def tearDown(self):
@@ -195,10 +213,10 @@ class TestLoadingBackendFunc(unittest.TestCase):
         assert self.compare_vect(p_or_orig, p_or)
 
     def test_get_line_status(self):
-        assert np.all(self.backend.get_line_status())
+        assert np.all(self.backend._get_line_status())
         self.backend._disconnect_line(3)
-        assert np.sum(~self.backend.get_line_status()) == 1
-        assert not self.backend.get_line_status()[3]
+        assert np.sum(~self.backend._get_line_status()) == 1
+        assert not self.backend._get_line_status()[3]
 
     def test_get_line_flow(self):
         self.backend.runpf(is_dc=False)
@@ -268,7 +286,9 @@ class TestLoadingBackendFunc(unittest.TestCase):
         init_ls = self.backend.get_line_status()
 
         action = self.action_env({})  # update the action
-        self.backend.apply_action(action)
+        bk_action = self.bkact_class()
+        bk_action += action
+        self.backend.apply_action( bk_action)
         after_lp, *_ = self.backend.loads_info()
         after_gp, *_ = self.backend.generators_info()
         after_ls = self.backend.get_line_status()
@@ -285,24 +305,46 @@ class TestLoadingBackendFunc(unittest.TestCase):
         # test that i can modify only the load / prod active values of the powergrid
         # to do that i modify the productions and load all of a factor 0.5 and compare that the DC flows are
         # also multiply by 2
+
+        # i set up the stuff to have exactly 0 losses
         conv = self.backend.runpf(is_dc=True)
+        assert conv
         init_flow, *_ = self.backend.lines_or_info()
         init_lp, init_l_q, *_ = self.backend.loads_info()
         init_gp, *_ = self.backend.generators_info()
         init_ls = self.backend.get_line_status()
+        ratio = 1.0
+        new_cp = ratio * init_lp
+        new_pp = ratio * init_gp*np.sum(init_lp)/np.sum(init_gp)
+        action = self.action_env({"injection": {"load_p": new_cp,
+                                                "prod_p": new_pp}})  # update the action
+        bk_action = self.bkact_class()
+        bk_action += action
+        self.backend.apply_action(bk_action)
+        conv = self.backend.runpf(is_dc=True)
+        # now the system has exactly 0 losses (ie sum load = sum gen)
 
+        # i check that if i divide by 2, then everything is divided by 2
+        assert conv
+        init_flow, *_ = self.backend.lines_or_info()
+        init_lp, init_l_q, *_ = self.backend.loads_info()
+        init_gp, *_ = self.backend.generators_info()
+        init_ls = self.backend.get_line_status()
         ratio = 0.5
-        action = self.action_env({"injection": {"load_p": ratio*init_lp,
-                                                "prod_p": ratio*init_gp*np.sum(init_lp)/np.sum(init_gp)}})  # update the action
-
-        self.backend.apply_action(action)
+        new_cp = ratio * init_lp
+        new_pp = ratio * init_gp
+        action = self.action_env({"injection": {"load_p": new_cp,
+                                                "prod_p": new_pp}})  # update the action
+        bk_action = self.bkact_class()
+        bk_action += action
+        self.backend.apply_action(bk_action)
         conv = self.backend.runpf(is_dc=True)
         assert conv, "Cannot perform a powerflow after doing nothing"
 
         after_lp, after_lq, *_ = self.backend.loads_info()
         after_gp, *_ = self.backend.generators_info()
         after_ls = self.backend.get_line_status()
-        assert self.compare_vect(ratio*init_lp, after_lp)  # check i didn't modify the loads
+        assert self.compare_vect(new_cp, after_lp)  # check i didn't modify the loads
         try:
             p_subs, q_subs, p_bus, q_bus = self.backend.check_kirchoff()
             # i'm in DC mode, i can't check for reactive values...
@@ -311,18 +353,20 @@ class TestLoadingBackendFunc(unittest.TestCase):
         except Grid2OpException:
             pass
 
-        assert self.compare_vect(ratio*init_gp, after_gp)  # check i didn't modify the generators
+        assert self.compare_vect(new_pp, after_gp)  # check i didn't modify the generators
         assert np.all(init_ls == after_ls)  # check i didn't disconnect any powerlines
 
         after_flow, *_ = self.backend.lines_or_info()
-        assert self.compare_vect(ratio*init_flow, after_flow) # probably an error with the DC approx
+        assert self.compare_vect(ratio*init_flow, after_flow)  # probably an error with the DC approx
 
     def test_apply_action_prod_v(self):
         conv = self.backend.runpf(is_dc=False)
         prod_p_init, prod_q_init, prod_v_init = self.backend.generators_info()
         ratio = 1.05
         action = self.action_env({"injection": {"prod_v": ratio*prod_v_init}})  # update the action
-        self.backend.apply_action(action)
+        bk_action = self.bkact_class()
+        bk_action += action
+        self.backend.apply_action(bk_action)
         conv = self.backend.runpf(is_dc=False)
         assert conv, "Cannot perform a powerflow aftermodifying the powergrid"
 
@@ -339,9 +383,11 @@ class TestLoadingBackendFunc(unittest.TestCase):
         maintenance = np.full((self.backend.n_line,), fill_value=False, dtype=np.bool)
         maintenance[19] = True
         action = self.action_env({"maintenance": maintenance})  # update the action
+        bk_action = self.bkact_class()
+        bk_action += action
 
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
 
         # compute a load flow an performs more tests
         conv = self.backend.runpf()
@@ -368,9 +414,10 @@ class TestLoadingBackendFunc(unittest.TestCase):
         maintenance = np.full((self.backend.n_line,), fill_value=False, dtype=np.bool)
         maintenance[17] = True
         action = self.action_env({"hazards": maintenance})  # update the action
-
+        bk_action = self.bkact_class()
+        bk_action += action
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
 
         # compute a load flow an performs more tests
         conv = self.backend.runpf()
@@ -399,8 +446,10 @@ class TestLoadingBackendFunc(unittest.TestCase):
         disc[17] = True
 
         action = self.action_env({"hazards": disc, "maintenance": maintenance})  # update the action
+        bk_action = self.bkact_class()
+        bk_action += action
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
 
         # compute a load flow an performs more tests
         conv = self.backend.runpf()
@@ -431,7 +480,10 @@ class TestTopoAction(unittest.TestCase):
         self.tol_one = 1e-5
 
         self.game_rules = RulesChecker()
-        self.helper_action = ActionSpace(gridobj=self.backend, legal_action=self.game_rules.legal_action)
+        self.backend.set_env_name("TestTopoAction_env")
+        as_class = ActionSpace.init_grid(self.backend)
+        self.helper_action = as_class(gridobj=self.backend, legal_action=self.game_rules.legal_action)
+        self.bkact_class = _BackendAction.init_grid(self.backend)
 
     # Cette méthode sera appelée après chaque test.
     def tearDown(self):
@@ -449,15 +501,19 @@ class TestTopoAction(unittest.TestCase):
         arr = np.array([1, 1, 1, 2, 2, 2], dtype=np.int)
         id_=1
         action = self.helper_action({"set_bus": {"substations_id": [(id_, arr)]}})
+        bk_action = self.bkact_class()
+        bk_action += action
 
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
         conv = self.backend.runpf()
         assert conv
         after_amps_flow = self.backend.get_line_flow()
 
         topo_vect = self.backend.get_topo_vect()
-        topo_vect_old = self.backend._get_topo_vect_old()
+        topo_vect_old = np.array([1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], dtype=dt_int)
         assert self.compare_vect(topo_vect, topo_vect_old) == True
 
     def test_topo_set1sub(self):
@@ -469,9 +525,11 @@ class TestTopoAction(unittest.TestCase):
         arr = np.array([1, 1, 1, 2, 2, 2], dtype=np.int)
         id_=1
         action = self.helper_action({"set_bus": {"substations_id": [(id_, arr)]}})
+        bk_action = self.bkact_class()
+        bk_action += action
 
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
         conv = self.backend.runpf()
         assert conv
         after_amps_flow = self.backend.get_line_flow()
@@ -522,9 +580,11 @@ class TestTopoAction(unittest.TestCase):
         arr = np.array([False, False, False, True, True, True], dtype=np.bool)
         id_ = 1
         action = self.helper_action({"change_bus": {"substations_id": [(id_, arr)]}})
+        bk_action = self.bkact_class()
+        bk_action += action
 
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
 
         # run the powerflow
         conv = self.backend.runpf()
@@ -566,16 +626,19 @@ class TestTopoAction(unittest.TestCase):
         # check that switching the bus of 3 object is equivalent to set them to bus 2 (as above)
         # and that setting it again is equivalent to doing nothing
         conv = self.backend.runpf()
-        init_amps_flow = np.array([el for el in self.backend.get_line_flow()])
+        init_amps_flow = copy.deepcopy(self.backend.get_line_flow())
 
         # check that maintenance vector is properly taken into account
         arr = np.array([False, False, False, True, True, True], dtype=np.bool)
         id_ = 1
         action = self.helper_action({"change_bus": {"substations_id": [(id_, arr)]}})
+        bk_action = self.bkact_class()
+        bk_action += action
 
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
         conv = self.backend.runpf()
+        bk_action.reset()
         assert conv
         after_amps_flow = self.backend.get_line_flow()
 
@@ -613,9 +676,10 @@ class TestTopoAction(unittest.TestCase):
             pass
 
         action = self.helper_action({"change_bus": {"substations_id": [(id_, arr)]}})
+        bk_action += action
 
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
         conv = self.backend.runpf()
         assert conv
 
@@ -643,8 +707,10 @@ class TestTopoAction(unittest.TestCase):
         id_2 = 12
         action = self.helper_action({"change_bus": {"substations_id": [(id_1, arr1)]},
                                      "set_bus": {"substations_id": [(id_2, arr2)]}})
+        bk_action = self.bkact_class()
+        bk_action += action
         # apply the action here
-        self.backend.apply_action(action)
+        self.backend.apply_action( bk_action)
         conv = self.backend.runpf()
         assert conv
 
@@ -707,6 +773,7 @@ class TestEnvPerformsCorrectCascadingFailures(unittest.TestCase):
         self.path_matpower = PATH_DATA_TEST
         self.case_file = "test_case14.json"
         self.backend.load_grid(self.path_matpower, self.case_file)
+        self.backend.set_env_name("TestEnvPerformsCorrectCascadingFailures_env")
         self.tolvect = 1e-2
         self.tol_one = 1e-5
         self.game_rules = RulesChecker()
@@ -730,7 +797,8 @@ class TestEnvPerformsCorrectCascadingFailures(unittest.TestCase):
         env = Environment(init_grid_path=os.path.join(self.path_matpower, self.case_file),
                           backend=self.backend,
                           chronics_handler=self.chronics_handler,
-                          parameters=self.env_params)
+                          parameters=self.env_params,
+                          name="test_pp_env1")
 
         disco, infos = self.backend.next_grid_state(env, is_dc=False)
         assert not infos
@@ -743,7 +811,8 @@ class TestEnvPerformsCorrectCascadingFailures(unittest.TestCase):
         env = Environment(init_grid_path=os.path.join(self.path_matpower, case_file),
                           backend=self.backend,
                           chronics_handler=self.chronics_handler,
-                          parameters=env_params)
+                          parameters=env_params,
+                          name="test_pp_env2")
         self.backend.load_grid(self.path_matpower, case_file)
 
         thermal_limit = 10*self.lines_flows_init
@@ -764,7 +833,8 @@ class TestEnvPerformsCorrectCascadingFailures(unittest.TestCase):
         env = Environment(init_grid_path=os.path.join(self.path_matpower, case_file),
                           backend=self.backend,
                           chronics_handler=self.chronics_handler,
-                          parameters=self.env_params)
+                          parameters=self.env_params,
+                          name="test_pp_env3")
         self.backend.load_grid(self.path_matpower, case_file)
 
         thermal_limit = 10*self.lines_flows_init
@@ -783,11 +853,12 @@ class TestEnvPerformsCorrectCascadingFailures(unittest.TestCase):
         case_file = self.case_file
         env_params = copy.deepcopy(self.env_params)
         env_params.HARD_OVERFLOW_THRESHOLD = 1.5
-        env_params.NB_TIMESTEP_POWERFLOW_ALLOWED = 0
+        env_params.NB_TIMESTEP_OVERFLOW_ALLOWED = 0
         env = Environment(init_grid_path=os.path.join(self.path_matpower, case_file),
                           backend=self.backend,
                           chronics_handler=self.chronics_handler,
-                          parameters=env_params)
+                          parameters=env_params,
+                          name="test_pp_env4")
         self.backend.load_grid(self.path_matpower, case_file)
 
         thermal_limit = 10*self.lines_flows_init
@@ -816,7 +887,8 @@ class TestEnvPerformsCorrectCascadingFailures(unittest.TestCase):
         env = Environment(init_grid_path=os.path.join(self.path_matpower, case_file),
                           backend=self.backend,
                           chronics_handler=self.chronics_handler,
-                          parameters=env_params)
+                          parameters=env_params,
+                          name="test_pp_env5")
         self.backend.load_grid(self.path_matpower, case_file)
 
         env.timestep_overflow[self.id_2nd_line_disco] = 0
@@ -844,7 +916,8 @@ class TestEnvPerformsCorrectCascadingFailures(unittest.TestCase):
         env = Environment(init_grid_path=os.path.join(self.path_matpower, case_file),
                           backend=self.backend,
                           chronics_handler=self.chronics_handler,
-                          parameters=env_params)
+                          parameters=env_params,
+                          name="test_pp_env6")
         self.backend.load_grid(self.path_matpower, case_file)
 
         env.timestep_overflow[self.id_2nd_line_disco] = 1
@@ -869,11 +942,12 @@ class TestEnvPerformsCorrectCascadingFailures(unittest.TestCase):
         case_file = self.case_file
         env_params = copy.deepcopy(self.env_params)
         env_params.HARD_OVERFLOW_THRESHOLD = 1.5
-        env_params.NB_TIMESTEP_POWERFLOW_ALLOWED = 2
+        env_params.NB_TIMESTEP_OVERFLOW_ALLOWED = 2
         env = Environment(init_grid_path=os.path.join(self.path_matpower, case_file),
                           backend=self.backend,
                           chronics_handler=self.chronics_handler,
-                          parameters=env_params)
+                          parameters=env_params,
+                          name="test_pp_env7")
         self.backend.load_grid(self.path_matpower, case_file)
 
         env.timestep_overflow[self.id_2nd_line_disco] = 2
@@ -898,7 +972,7 @@ class TestChangeBusAffectRightBus(unittest.TestCase):
     def test_set_bus(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env = make_new(test=True)
+            env = make(test=True)
         env.reset()
         # action = env.helper_action_player({"change_bus": {"lines_or_id": [17]}})
         action = env.helper_action_player({"set_bus": {"lines_or_id": [(17, 2)]}})
@@ -909,7 +983,7 @@ class TestChangeBusAffectRightBus(unittest.TestCase):
     def test_change_bus(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env = make_new(test=True)
+            env = make(test=True)
         env.reset()
         action = env.helper_action_player({"change_bus": {"lines_or_id": [17]}})
         obs, reward, done, info = env.step(action)
@@ -919,18 +993,26 @@ class TestChangeBusAffectRightBus(unittest.TestCase):
     def test_change_bustwice(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env = make_new(test=True)
+            env = make(test=True)
         env.reset()
         action = env.helper_action_player({"change_bus": {"lines_or_id": [17]}})
         obs, reward, done, info = env.step(action)
+        assert not done
+        assert np.all(np.isfinite(obs.v_or))
+        assert np.sum(env.backend._grid["bus"]["in_service"]) == 15
+        assert env.backend._grid["trafo"]["hv_bus"][2] == 18
+
+        action = env.helper_action_player({"change_bus": {"lines_or_id": [17]}})
         obs, reward, done, info = env.step(action)
+        assert not done
         assert np.all(np.isfinite(obs.v_or))
         assert np.sum(env.backend._grid["bus"]["in_service"]) == 14
+        assert env.backend._grid["trafo"]["hv_bus"][2] == 4
 
     def test_isolate_load(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env = make_new(test=True)
+            env = make(test=True)
         act = env.action_space({"set_bus": {"loads_id": [(0, 2)]}})
         obs, reward, done, info = env.step(act)
         assert done, "an isolated laod has not lead to a game over"
@@ -938,7 +1020,7 @@ class TestChangeBusAffectRightBus(unittest.TestCase):
     def test_reco_disco_bus(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env_case1 = make_new("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
+            env_case1 = make("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
         obs = env_case1.reset()  # reset is good
         act = env_case1.action_space.disconnect_powerline(line_id=5)  # I disconnect a powerline
         obs, reward, done, info = env_case1.step(act)  # do the action, it's valid
@@ -951,7 +1033,7 @@ class TestChangeBusAffectRightBus(unittest.TestCase):
     def test_reco_disco_bus2(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env_case2 = make_new("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
+            env_case2 = make("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
         obs = env_case2.reset()  # reset is good
         obs, reward, done, info = env_case2.step(env_case2.action_space())  # do the action, it's valid
         act_case2 = env_case2.action_space.reconnect_powerline(line_id=5, bus_or=2, bus_ex=2)  # reconnect powerline on bus 2 both ends
@@ -964,7 +1046,7 @@ class TestChangeBusAffectRightBus(unittest.TestCase):
     def test_reco_disco_bus3(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env_case2 = make_new("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
+            env_case2 = make("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
         obs = env_case2.reset()  # reset is good
         obs, reward, done, info = env_case2.step(env_case2.action_space())  # do the action, it's valid
         act_case2 = env_case2.action_space.reconnect_powerline(line_id=5, bus_or=1, bus_ex=2)  # reconnect powerline on bus 2 both ends
@@ -975,7 +1057,7 @@ class TestChangeBusAffectRightBus(unittest.TestCase):
     def test_reco_disco_bus4(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env_case2 = make_new("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
+            env_case2 = make("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
         obs = env_case2.reset()  # reset is good
         obs, reward, done, info = env_case2.step(env_case2.action_space())  # do the action, it's valid
         act_case2 = env_case2.action_space.reconnect_powerline(line_id=5, bus_or=2, bus_ex=1)  # reconnect powerline on bus 2 both ends
@@ -986,7 +1068,7 @@ class TestChangeBusAffectRightBus(unittest.TestCase):
     def test_reco_disco_bus5(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env_case2 = make_new("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
+            env_case2 = make("rte_case5_example", test=True, gamerules_class=AlwaysLegal)
         obs = env_case2.reset()  # reset is good
         act_case2 = env_case2.action_space({"set_bus": {"lines_or_id": [(5,2)], "lines_ex_id": [(5,2)]}})  # reconnect powerline on bus 2 both ends
         # this should not lead to a game over this time, the grid is connex!
@@ -998,16 +1080,16 @@ class TestShuntAction(HelperTests):
     def test_shunt_ambiguous_id_incorrect(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            with make_new("rte_case5_example", test=True, gamerules_class=AlwaysLegal, action_class=CompleteAction) as env_case2:
+            with make("rte_case5_example", test=True, gamerules_class=AlwaysLegal, action_class=CompleteAction) as env_case2:
                 with self.assertRaises(AmbiguousAction):
                     act = env_case2.action_space({"shunt": {"set_bus": [(0, 2)]}})
 
     def test_shunt_effect(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            env_ref = make_new("rte_case14_realistic", test=True, gamerules_class=AlwaysLegal,
+            env_ref = make("rte_case14_realistic", test=True, gamerules_class=AlwaysLegal,
                                action_class=CompleteAction)
-            env_change_q = make_new("rte_case14_realistic", test=True, gamerules_class=AlwaysLegal,
+            env_change_q = make("rte_case14_realistic", test=True, gamerules_class=AlwaysLegal,
                                     action_class=CompleteAction)
 
         obs_ref, *_ = env_ref.step(env_ref.action_space())
@@ -1026,9 +1108,9 @@ class TestResetEqualsLoadGrid(unittest.TestCase):
     def setUp(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            self.env1 = make_new("rte_case5_example", test=True, backend=PandaPowerBackend())
+            self.env1 = make("rte_case5_example", test=True, backend=PandaPowerBackend())
             self.backend1 = self.env1.backend
-            self.env2 = make_new("rte_case5_example", test=True, backend=PandaPowerBackend())
+            self.env2 = make("rte_case5_example", test=True, backend=PandaPowerBackend())
             self.backend2 = self.env2.backend
 
     def tearDown(self):
@@ -1130,11 +1212,41 @@ class TestResetEqualsLoadGrid(unittest.TestCase):
         assert np.all(obs1.timestep_overflow == obs2.timestep_overflow)
         assert np.all(obs1.time_before_cooldown_line == obs2.time_before_cooldown_line)
         assert np.all(obs1.time_before_cooldown_sub == obs2.time_before_cooldown_sub)
-        assert np.all(obs1.time_before_line_reconnectable == obs2.time_before_line_reconnectable)
         assert np.all(obs1.time_next_maintenance == obs2.time_next_maintenance)
         assert np.all(obs1.duration_next_maintenance == obs2.duration_next_maintenance)
         assert np.all(obs1.target_dispatch == obs2.target_dispatch)
         assert np.all(obs1.actual_dispatch == obs2.actual_dispatch)
-    
+
+
+class TestVoltageOWhenDisco(unittest.TestCase):
+    def test_this(self):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            with make("rte_case14_realistic", test=True) as env:
+                line_id = 1
+                act = env.action_space({"set_line_status": [(line_id, -1)]})
+                obs, *_ = env.step(act)
+                assert obs.v_or[line_id] == 0.  # is not 0 however line is not connected
+
+
+class TestChangeBusSlack(unittest.TestCase):
+    def setUp(self):
+        self.tolvect = 1e-2
+        self.tol_one = 1e-5
+
+    def test_change_slack_case14(self):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            env = grid2op.make("rte_case14_realistic", test=True)
+        action = env.action_space({"set_bus": {"generators_id": [(-1, 2)], "lines_or_id": [(0, 2)]}})
+        obs, reward, am_i_done, info = env.step(action)
+        assert am_i_done is False
+        assert np.all(obs.prod_p >= 0.)
+        assert np.sum(obs.prod_p) >= np.sum(obs.load_p)
+        p_subs, q_subs, p_bus, q_bus = env.backend.check_kirchoff()
+        assert np.all(np.abs(p_subs) <= self.tol_one)
+        assert np.all(np.abs(p_bus) <= self.tol_one)
+
+
 if __name__ == "__main__":
     unittest.main()

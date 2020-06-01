@@ -7,6 +7,7 @@
 # This file is part of Grid2Op, Grid2Op a testbed platform to model sequential decision making in power systems.
 
 import warnings
+import tempfile
 import pdb
 
 from grid2op.tests.helper_path_test import *
@@ -15,23 +16,18 @@ PATH_ADN_CHRONICS_FOLDER = os.path.abspath(os.path.join(PATH_CHRONICS, "test_mul
 from grid2op.Chronics import Multifolder
 from grid2op.Reward import L2RPNReward
 from grid2op.Backend import PandaPowerBackend
-from grid2op.MakeEnv import make_new
+from grid2op.MakeEnv import make
 from grid2op.Runner import Runner
-
-DEBUG = True
+from grid2op.dtypes import dt_float
 
 
 class TestRunner(HelperTests):
     def setUp(self):
-        """
-        The case file is a representation of the case14 as found in the ieee14 powergrid.
-        :return:
-        """
         self.init_grid_path = os.path.join(PATH_DATA_TEST_PP, "test_case14.json")
         self.path_chron = PATH_ADN_CHRONICS_FOLDER
         self.parameters_path = None
         self.max_iter = 10
-        self.real_reward = 199.99800
+        self.real_reward = dt_float(199.99800)
         self.names_chronics_to_backend = {"loads": {"2_C-10.61": 'load_1_0', "3_C151.15": 'load_2_1',
                                                     "14_C63.6": 'load_13_2', "4_C-9.47": 'load_3_3',
                                                     "5_C201.84": 'load_4_4',
@@ -60,41 +56,100 @@ class TestRunner(HelperTests):
                              gridStateclass=self.gridStateclass,
                              backendClass=self.backendClass,
                              rewardClass=L2RPNReward,
-                             max_iter=self.max_iter)
+                             max_iter=self.max_iter,
+                             name_env="test_runner_env")
 
     def test_one_episode(self):
-        _, cum_reward, timestep = self.runner.run_one_episode()
+        _, cum_reward, timestep = self.runner.run_one_episode(max_iter=self.max_iter)
         assert int(timestep) == self.max_iter
         assert np.abs(cum_reward - self.real_reward) <= self.tol_one
 
-    def test_3_episode(self):
-        res = self.runner.run_sequential(nb_episode=2)
+    def test_2episode(self):
+        res = self.runner.run_sequential(nb_episode=2, max_iter=self.max_iter)
         assert len(res) == 2
         for i, _, cum_reward, timestep, total_ts in res:
             assert int(timestep) == self.max_iter
             assert np.abs(cum_reward - self.real_reward) <= self.tol_one
 
-    def test_3_episode_3process(self):
-        res = self.runner.run_parrallel(nb_episode=2, nb_process=2)
+    def test_2episode_2process(self):
+        res = self.runner.run_parrallel(nb_episode=2, nb_process=2, max_iter=self.max_iter)
         assert len(res) == 2
         for i, _, cum_reward, timestep, total_ts in res:
             assert int(timestep) == self.max_iter
             assert np.abs(cum_reward - self.real_reward) <= self.tol_one
+
+    def test_complex_agent(self):
+        nb_episode = 4
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            with make("rte_case5_example", test=True) as env:
+                f = tempfile.mkdtemp()
+                runner_params = env.get_params_for_runner()
+                runner = Runner(**runner_params)
+                res = runner.run(path_save=f,
+                                 nb_episode=4,
+                                 nb_process=4,
+                                 max_iter=self.max_iter)
+        test_ = set()
+        for id_chron, name_chron, cum_reward, nb_time_step, max_ts in res:
+            test_.add(name_chron)
+        assert len(test_) == nb_episode
 
     def test_init_from_env(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            with make_new("rte_case14_test", test=True) as env:
+            with make("rte_case14_test", test=True) as env:
                 runner = Runner(**env.get_params_for_runner())
-        runner.run(nb_episode=1, max_iter=self.max_iter )
+        res = runner.run(nb_episode=1, max_iter=self.max_iter)
+        for i, _, cum_reward, timestep, total_ts in res:
+            assert int(timestep) == self.max_iter
 
     def test_init_from_env_with_other_reward(self):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            with make_new("rte_case14_test", test=True, other_rewards={"test": L2RPNReward}) as env:
+            with make("rte_case14_test", test=True, other_rewards={"test": L2RPNReward}) as env:
                 runner = Runner(**env.get_params_for_runner())
-        runner.run(nb_episode=1, max_iter=self.max_iter)
+        res = runner.run(nb_episode=1, max_iter=self.max_iter)
+        for i, _, cum_reward, timestep, total_ts in res:
+            assert int(timestep) == self.max_iter
 
+    def test_seed_seq(self):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            with make("rte_case14_test", test=True) as env:
+                runner = Runner(**env.get_params_for_runner())
+        res = runner.run(nb_episode=1, max_iter=self.max_iter, seeds=[1])
+        for i, _, cum_reward, timestep, total_ts in res:
+            assert int(timestep) == self.max_iter
+
+    def test_seed_par(self):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            with make("rte_case14_test", test=True) as env:
+                runner = Runner(**env.get_params_for_runner())
+        res = runner.run(nb_episode=2, nb_process=2, max_iter=self.max_iter, seeds=[1, 2])
+        for i, _, cum_reward, timestep, total_ts in res:
+            assert int(timestep) == self.max_iter
+
+    def test_nomaxiter(self):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            with make("rte_case14_test", test=True) as env:
+                runner = Runner(**env.get_params_for_runner())
+        runner.chronics_handler.set_max_iter(2*self.max_iter)
+        res = runner.run(nb_episode=1)
+        for i, _, cum_reward, timestep, total_ts in res:
+            assert int(timestep) == 2*self.max_iter
+
+    def test_nomaxiter_par(self):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            with make("rte_case14_test", test=True) as env:
+                runner = Runner(**env.get_params_for_runner())
+        runner.gridStateclass_kwargs["max_iter"] = 2*self.max_iter
+        res = runner.run(nb_episode=2, nb_process=2)
+        for i, _, cum_reward, timestep, total_ts in res:
+            assert int(timestep) == 2*self.max_iter
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,6 @@
 import os
 import json
 import warnings
-import re
 
 from grid2op.dtypes import dt_int, dt_float, dt_bool
 
@@ -27,7 +26,7 @@ class Parameters:
         thermal
         limit. Default is ``False``
 
-    NB_TIMESTEP_POWERFLOW_ALLOWED: ``int``
+    NB_TIMESTEP_OVERFLOW_ALLOWED: ``int``
         Number of timesteps for which a soft overflow is allowed, default 2. This means that a powerline will be
         disconnected (if :attr:`.NO_OVERFLOW_DISCONNECTION` is set to ``False``) after 2 time steps above its thermal
         limit. This is called a "soft overflow".
@@ -37,7 +36,7 @@ class Parameters:
         :attr:`.NB_TIMESTEP_POWERFLOW_ALLOWED` or :attr:`.HARD_OVERFLOW_THRESHOLD`) will remain disconnected.
         It's set to 10 timestep by default.
 
-    NB_TIMESTEP_LINE_STATUS_REMODIF: ``int``
+    NB_TIMESTEP_COOLDOWN_LINE: ``int``
         When someone acts on a powerline by changing its status (connected / disconnected) this number indicates
         how many timesteps the :class:`grid2op.Agent.BaseAgent` has to wait before being able to modify this status
         again.
@@ -45,7 +44,7 @@ class Parameters:
         time step it acts, another one it cools down, and the next one it can act again). Having it at 0 it equivalent
         to deactivate this feature (default).
 
-    NB_TIMESTEP_TOPOLOGY_REMODIF: ``int``
+    NB_TIMESTEP_COOLDOWN_SUB: ``int``
         When someone changes the topology of a substations, this number indicates how many timesteps the
         :class:`grid2op.Agent.BaseAgent` has to wait before being able to modify the topology on this same substation. It
         has the same behaviour as :attr:`Parameters.NB_TIMESTEP_LINE_STATUS_REMODIF`. To deactivate this feature,
@@ -71,11 +70,13 @@ class Parameters:
         Maximum number of substations that can be reconfigured between two consecutive timesteps by an
         :class:`grid2op.Agent.BaseAgent`. Default value is 1.
 
-
     MAX_LINE_STATUS_CHANGED: ``int``
         Maximum number of powerlines statuses that can be changed between two consecutive timestetps by an
         :class:`grid2op.Agent.BaseAgent`. Default value is 1.
 
+    IGNORE_MIN_UP_DOWN_TIME: ``bool``
+        Whether or not to ignore the attributes `gen_min_uptime` and `gen_min_downtime`. Basically setting this
+        parameter to ``True``
     """
     def __init__(self, parameters_path=None):
         """
@@ -91,14 +92,14 @@ class Parameters:
         self.NO_OVERFLOW_DISCONNECTION = False
 
         # number of timestep before powerline with an overflow is automatically disconnected
-        self.NB_TIMESTEP_POWERFLOW_ALLOWED = dt_int(2)
+        self.NB_TIMESTEP_OVERFLOW_ALLOWED = dt_int(2)
 
         # number of timestep before a line can be reconnected if it has suffer a forced disconnection
         self.NB_TIMESTEP_RECONNECTION = dt_int(10)
 
         # number of timestep before a substation topology can be modified again
-        self.NB_TIMESTEP_TOPOLOGY_REMODIF = dt_int(0)
-        self.NB_TIMESTEP_LINE_STATUS_REMODIF = dt_int(0)
+        self.NB_TIMESTEP_COOLDOWN_LINE = dt_int(0)
+        self.NB_TIMESTEP_COOLDOWN_SUB = dt_int(0)
 
         # threshold above which a powerline is instantly disconnected by protections
         # this is expressed in relative value of the thermal limits
@@ -118,17 +119,16 @@ class Parameters:
         # maximum number of powerline status that can be changed in one action
         self.MAX_LINE_STATUS_CHANGED = dt_int(1)
 
+        # ignore the min_uptime and downtime for the generators: allow them to be connected / disconnected
+        # at will
+        self.IGNORE_MIN_UP_DOWN_TIME = True
+
+        # allow dispatch on turned off generator (if ``True`` you can actually dispatch a turned on geenrator)
+        self.ALLOW_DISPATCH_GEN_SWITCH_OFF = True
+
         if parameters_path is not None:
             if os.path.isfile(parameters_path):
-                if re.search(".*\.json$", parameters_path) is not None:
-                    with open(parameters_path) as f:
-                        dict_ = json.load(f)
-                    self._init_from_json(dict_)
-                else:
-                    warn_msg = "Parameters: the file {} is not a supported file for loading " \
-                               "parameters. Continuing with default _parameters."
-                    warnings.warn(warn_msg.format(parameters_path))
-
+                self.init_from_json(parameters_path)
             else:
                 warn_msg = "Parameters: the file {} is not found. Continuing with default parameters."
                 warnings.warn(warn_msg.format(parameters_path))
@@ -167,8 +167,16 @@ class Parameters:
         if "NO_OVERFLOW_DISCONNECTION" in dict_:
             self.NO_OVERFLOW_DISCONNECTION = Parameters._isok_txt(dict_["NO_OVERFLOW_DISCONNECTION"])
 
+        if "IGNORE_MIN_UP_DOWN_TIME" in dict_:
+            self.IGNORE_MIN_UP_DOWN_TIME = Parameters._isok_txt(dict_["IGNORE_MIN_UP_DOWN_TIME"])
+
+        if "ALLOW_DISPATCH_GEN_SWITCH_OFF" in dict_:
+            self.ALLOW_DISPATCH_GEN_SWITCH_OFF = Parameters._isok_txt(dict_["ALLOW_DISPATCH_GEN_SWITCH_OFF"])
+
         if "NB_TIMESTEP_POWERFLOW_ALLOWED" in dict_:
-            self.NB_TIMESTEP_POWERFLOW_ALLOWED = dt_int(dict_["NB_TIMESTEP_POWERFLOW_ALLOWED"])
+            self.NB_TIMESTEP_OVERFLOW_ALLOWED = dt_int(dict_["NB_TIMESTEP_POWERFLOW_ALLOWED"])
+        if "NB_TIMESTEP_OVERFLOW_ALLOWED" in dict_:
+            self.NB_TIMESTEP_OVERFLOW_ALLOWED = dt_int(dict_["NB_TIMESTEP_OVERFLOW_ALLOWED"])
 
         if "NB_TIMESTEP_RECONNECTION" in dict_:
             self.NB_TIMESTEP_RECONNECTION = dt_int(dict_["NB_TIMESTEP_RECONNECTION"])
@@ -189,12 +197,22 @@ class Parameters:
             self.MAX_LINE_STATUS_CHANGED = dt_int(dict_["MAX_LINE_STATUS_CHANGED"])
 
         if "NB_TIMESTEP_TOPOLOGY_REMODIF" in dict_:
-            self.NB_TIMESTEP_TOPOLOGY_REMODIF = dt_int(dict_["NB_TIMESTEP_TOPOLOGY_REMODIF"])
+            # for backward compatibility (in case of old dataset)
+            self.NB_TIMESTEP_COOLDOWN_SUB = dt_int(dict_["NB_TIMESTEP_TOPOLOGY_REMODIF"])
+        if "NB_TIMESTEP_COOLDOWN_SUB" in dict_:
+            self.NB_TIMESTEP_COOLDOWN_SUB = dt_int(dict_["NB_TIMESTEP_COOLDOWN_SUB"])
 
         if "NB_TIMESTEP_LINE_STATUS_REMODIF" in dict_:
-            self.NB_TIMESTEP_TOPOLOGY_REMODIF = dt_int(dict_["NB_TIMESTEP_LINE_STATUS_REMODIF"])
+            # for backward compatibility (in case of old dataset)
+            self.NB_TIMESTEP_COOLDOWN_LINE = dt_int(dict_["NB_TIMESTEP_LINE_STATUS_REMODIF"])
+        if "NB_TIMESTEP_COOLDOWN_LINE" in dict_:
+            self.NB_TIMESTEP_COOLDOWN_LINE = dt_int(dict_["NB_TIMESTEP_COOLDOWN_LINE"])
 
-        ignored_keys = dict_.keys() - self.__dict__.keys()
+        authorized_keys = set(self.__dict__.keys())
+        authorized_keys = authorized_keys | {'NB_TIMESTEP_POWERFLOW_ALLOWED',
+                                             'NB_TIMESTEP_TOPOLOGY_REMODIF',
+                                             "NB_TIMESTEP_LINE_STATUS_REMODIF"}
+        ignored_keys = dict_.keys() - authorized_keys
         if len(ignored_keys):
             warnings.warn("Parameters: The _parameters \"{}\" used to build the Grid2Op.Parameters "
                           "class are not recognized and will be ignored.".format(ignored_keys))
@@ -211,21 +229,41 @@ class Parameters:
         """
         res = {}
         res["NO_OVERFLOW_DISCONNECTION"] = bool(self.NO_OVERFLOW_DISCONNECTION)
-        res["NB_TIMESTEP_POWERFLOW_ALLOWED"] = int(self.NB_TIMESTEP_POWERFLOW_ALLOWED)
+        res["IGNORE_MIN_UP_DOWN_TIME"] = bool(self.IGNORE_MIN_UP_DOWN_TIME)
+        res["ALLOW_DISPATCH_GEN_SWITCH_OFF"] = bool(self.ALLOW_DISPATCH_GEN_SWITCH_OFF)
+        res["NB_TIMESTEP_OVERFLOW_ALLOWED"] = int(self.NB_TIMESTEP_OVERFLOW_ALLOWED)
         res["NB_TIMESTEP_RECONNECTION"] = int(self.NB_TIMESTEP_RECONNECTION)
         res["HARD_OVERFLOW_THRESHOLD"] = float(self.HARD_OVERFLOW_THRESHOLD)
         res["ENV_DC"] = bool(self.ENV_DC)
         res["FORECAST_DC"] = bool(self.FORECAST_DC)
         res["MAX_SUB_CHANGED"] = int(self.MAX_SUB_CHANGED)
         res["MAX_LINE_STATUS_CHANGED"] = int(self.MAX_LINE_STATUS_CHANGED)
-        res["NB_TIMESTEP_TOPOLOGY_REMODIF"] = int(self.NB_TIMESTEP_TOPOLOGY_REMODIF)
-        res["NB_TIMESTEP_LINE_STATUS_REMODIF"] = int(self.NB_TIMESTEP_LINE_STATUS_REMODIF)
+        res["NB_TIMESTEP_COOLDOWN_LINE"] = int(self.NB_TIMESTEP_COOLDOWN_LINE)
+        res["NB_TIMESTEP_COOLDOWN_SUB"] = int(self.NB_TIMESTEP_COOLDOWN_SUB)
         return res
 
-    @staticmethod
-    def init_from_json(json_path):
+    def init_from_json(self, json_path):
         """
-        Initializes the _parameters from a json path.
+        Set member attributes from a json file
+
+        Parameters
+        ----------
+        json_path: ``str``
+            The complete (*ie.* path + filename) where the json file is located.
+        """
+        try:
+            with open(json_path) as f:
+                dict_ = json.load(f)
+            self.init_from_dict(dict_)
+        except:
+            warn_msg = "Could not load from {}\n" \
+                       "Continuing with default parameters"
+            warnings.warn(warn_msg.format(json_path))
+        
+    @staticmethod
+    def from_json(json_path):
+        """
+        Create instance from a json path.
 
         Parameters
         ----------
@@ -238,8 +276,5 @@ class Parameters:
             The _parameters initialized
 
         """
-        with open(json_path) as f:
-            dict_ = json.load(f)
-        res = Parameters()
-        res.init_from_dict(dict_)
+        res = Parameters(json_path)
         return res

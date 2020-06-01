@@ -8,7 +8,6 @@
 import copy
 import numpy as np
 from abc import abstractmethod
-import pdb
 
 from grid2op.dtypes import dt_int, dt_float, dt_bool
 from grid2op.Exceptions import *
@@ -133,22 +132,17 @@ class BaseObservation(GridObjects):
         number of timesteps to wait before acting on this substation (see
         see :attr:`grid2op.Parameters.Parameters.NB_TIMESTEP_TOPOLOGY_REMODIF` for more information).
 
-    time_before_line_reconnectable: :class:`numpy.ndarray`, dtype:int
-        For each powerline, it gives the number of timesteps before the powerline can be reconnected. This only
-        concerns the maintenance, outage (hazards) and disconnection due to cascading failures (including overflow). The
-        same convention as for :attr:`BaseObservation.time_before_cooldown_line` and
-        :attr:`BaseObservation.time_before_cooldown_sub` is adopted: 0 at position `i` means that the powerline can be
-        reconnected. It there is 2 (for example) it means that the powerline `i` is unavailable for 2 timesteps (we
-        will be able to re connect it not this time, not next time, but the following timestep)
-
     time_next_maintenance: :class:`numpy.ndarray`, dtype:int
         For each powerline, it gives the time of the next planned maintenance. For example if there is:
 
-            - `1` at position `i` it means that the powerline `i` will be disconnected for maintenance operation at the next time step. A
+            - `1` at position `i` it means that the powerline `i` will be disconnected for maintenance operation at
+              the next time step.
             - `0` at position `i` means that powerline `i` is disconnected from the powergrid for maintenance operation
               at the current time step.
             - `-1` at position `i` means that powerline `i` will not be disconnected for maintenance reason for this
               episode.
+            - `k` > 1 at position `i` it means that the powerline `i` will be disconnected for maintenance operation at
+              in `k` time steps
 
     duration_next_maintenance: :class:`numpy.ndarray`, dtype:int
         For each powerline, it gives the number of time step that the maintenance will last (if any). This means that,
@@ -174,12 +168,11 @@ class BaseObservation(GridObjects):
         dispatchable.
 
     """
-    def __init__(self, gridobj,
+    def __init__(self,
                  obs_env=None,
                  action_helper=None,
                  seed=None):
         GridObjects.__init__(self)
-        self.init_grid(gridobj)
 
         self.action_helper = action_helper
 
@@ -195,61 +188,65 @@ class BaseObservation(GridObjects):
         self.seed = None
 
         # handles the forecasts here
-        self._forecasted_grid = []
+        self._forecasted_grid_act = {}
         self._forecasted_inj = []
 
-        self._obs_env = obs_env
-
-        self.timestep_overflow = None
+        self.timestep_overflow = np.zeros(shape=(self.n_line,), dtype=dt_int)
 
         # 0. (line is disconnected) / 1. (line is connected)
-        self.line_status = None
+        self.line_status = np.ones(shape=self.n_line, dtype=dt_bool)
 
         # topological vector
-        self.topo_vect = None
+        self.topo_vect = np.full(shape=self.dim_topo, dtype=dt_int, fill_value=0)
 
         # generators information
-        self.prod_p = None
-        self.prod_q = None
-        self.prod_v = None
+        self.prod_p = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self.prod_q = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self.prod_v = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
         # loads information
-        self.load_p = None
-        self.load_q = None
-        self.load_v = None
+        self.load_p = np.full(shape=self.n_load, dtype=dt_float, fill_value=np.NaN)
+        self.load_q = np.full(shape=self.n_load, dtype=dt_float, fill_value=np.NaN)
+        self.load_v = np.full(shape=self.n_load, dtype=dt_float, fill_value=np.NaN)
         # lines origin information
-        self.p_or = None
-        self.q_or = None
-        self.v_or = None
-        self.a_or = None
+        self.p_or = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.q_or = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.v_or = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.a_or = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
         # lines extremity information
-        self.p_ex = None
-        self.q_ex = None
-        self.v_ex = None
-        self.a_ex = None
+        self.p_ex = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.q_ex = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.v_ex = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.a_ex = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
         # lines relative flows
-        self.rho = None
+        self.rho = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
 
         # cool down and reconnection time after hard overflow, soft overflow or cascading failure
-        self.time_before_cooldown_line = None
-        self.time_before_cooldown_sub = None
-        self.time_before_line_reconnectable = None
-        self.time_next_maintenance = None
-        self.duration_next_maintenance = None
+        self.time_before_cooldown_line = np.full(shape=self.n_line, dtype=dt_int, fill_value=-1)
+        self.time_before_cooldown_sub = np.full(shape=self.n_sub, dtype=dt_int, fill_value=-1)
+        self.time_next_maintenance = np.full(shape=self.n_line, dtype=dt_int, fill_value=-1)
+        self.duration_next_maintenance = np.full(shape=self.n_line, dtype=dt_int, fill_value=-1)
 
-        # matrices
-        self.connectivity_matrix_ = None
-        self.bus_connectivity_matrix_ = None
-        self.vectorized = None
+        # calendar data
+        self.year = dt_int(1970)
+        self.month = dt_int(0)
+        self.day = dt_int(0)
+        self.hour_of_day = dt_int(0)
+        self.minute_of_hour = dt_int(0)
+        self.day_of_week = dt_int(0)
+
+        # forecasts
+        self._forecasted_inj = []
+        self._forecasted_grid = []
+        self._obs_env = obs_env
 
         # redispatching
-        self.target_dispatch = None
-        self.actual_dispatch = None
+        self.target_dispatch = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self.actual_dispatch = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
 
         # value to assess if two observations are equal
         self._tol_equal = 5e-1
 
         self.attr_list_vect = None
-        self.reset()
 
     def state_of(self, _sentinel=None, load_id=None, gen_id=None, line_id=None, substation_id=None):
         """
@@ -398,9 +395,6 @@ class BaseObservation(GridObjects):
             # cooldown
             res["cooldown_time"] = self.time_before_cooldown_line[line_id]
 
-            # indisponibility
-            res["indisponibility"] = self.time_before_line_reconnectable[line_id]
-
         else:
             if substation_id >= len(self.sub_info):
                 raise Grid2OpException("There are no substation of id \"substation_id={}\" in this grid.".format(substation_id))
@@ -427,41 +421,40 @@ class BaseObservation(GridObjects):
 
         """
         # vecorized _grid
-        self.timestep_overflow = np.zeros(shape=(self.n_line,), dtype=dt_int)
+        self.timestep_overflow[:] = 0
 
         # 0. (line is disconnected) / 1. (line is connected)
-        self.line_status = np.ones(shape=self.n_line, dtype=dt_bool)
+        self.line_status[:] = True
 
         # topological vector
-        self.topo_vect = np.full(shape=self.dim_topo, dtype=dt_int, fill_value=0)
+        self.topo_vect[:] = 0
 
         # generators information
-        self.prod_p = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
-        self.prod_q = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
-        self.prod_v = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self.prod_p[:] = np.NaN
+        self.prod_q[:] = np.NaN
+        self.prod_v[:] = np.NaN
         # loads information
-        self.load_p = np.full(shape=self.n_load, dtype=dt_float, fill_value=np.NaN)
-        self.load_q = np.full(shape=self.n_load, dtype=dt_float, fill_value=np.NaN)
-        self.load_v = np.full(shape=self.n_load, dtype=dt_float, fill_value=np.NaN)
+        self.load_p[:] = np.NaN
+        self.load_q[:] = np.NaN
+        self.load_v[:] = np.NaN
         # lines origin information
-        self.p_or = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.q_or = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.v_or = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.a_or = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.p_or[:] = np.NaN
+        self.q_or[:] = np.NaN
+        self.v_or[:] = np.NaN
+        self.a_or[:] = np.NaN
         # lines extremity information
-        self.p_ex = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.q_ex = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.v_ex = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.a_ex = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.p_ex[:] = np.NaN
+        self.q_ex[:] = np.NaN
+        self.v_ex[:] = np.NaN
+        self.a_ex[:] = np.NaN
         # lines relative flows
-        self.rho = np.full(shape=self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self.rho[:] = np.NaN
 
         # cool down and reconnection time after hard overflow, soft overflow or cascading failure
-        self.time_before_cooldown_line = np.full(shape=self.n_line, dtype=dt_int, fill_value=-1)
-        self.time_before_cooldown_sub = np.full(shape=self.n_sub, dtype=dt_int, fill_value=-1)
-        self.time_before_line_reconnectable = np.full(shape=self.n_line, dtype=dt_int, fill_value=-1)
-        self.time_next_maintenance = np.full(shape=self.n_line, dtype=dt_int, fill_value=-1)
-        self.duration_next_maintenance = np.full(shape=self.n_line, dtype=dt_int, fill_value=-1)
+        self.time_before_cooldown_line[:] = -1
+        self.time_before_cooldown_sub[:] = -1
+        self.time_next_maintenance[:] = -1
+        self.duration_next_maintenance[:] = -1
 
         # calendar data
         self.year = dt_int(1970)
@@ -473,29 +466,31 @@ class BaseObservation(GridObjects):
 
         # forecasts
         self._forecasted_inj = []
-        self._forecasted_grid = []
+        self._forecasted_grid_act = {}
 
         # redispatching
-        self.target_dispatch = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
-        self.actual_dispatch = np.full(shape=self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self.target_dispatch[:] = np.NaN
+        self.actual_dispatch[:] = np.NaN
 
     def __compare_stats(self, other, name):
-        if self.__dict__[name] is None and other.__dict__[name] is not None:
+        attr_me = getattr(self, name)
+        attr_other = getattr(other, name)
+        if attr_me is None and attr_other is not None:
             return False
-        if self.__dict__[name] is not None and other.__dict__[name] is None:
+        if attr_me is not None and attr_other is None:
             return False
-        if self.__dict__[name] is not None:
-            if self.__dict__[name].shape != other.__dict__[name].shape:
+        if attr_me is not None:
+            if attr_me.shape != attr_other.shape:
                 return False
 
-            if self.__dict__[name].dtype != other.__dict__[name].dtype:
+            if attr_me.dtype != attr_other.dtype:
                 return False
-            if np.issubdtype(self.__dict__[name].dtype, np.dtype(dt_float).type):
+            if np.issubdtype(attr_me.dtype, np.dtype(dt_float).type):
                 # special case of floating points, otherwise vector are never equal
-                if not np.all(np.abs(self.__dict__[name] - other.__dict__[name]) <= self._tol_equal):
+                if not np.all(np.abs(attr_me - attr_other) <= self._tol_equal):
                     return False
             else:
-                if not np.all(self.__dict__[name] == other.__dict__[name]):
+                if not np.all(attr_me == attr_other):
                     return False
         return True
 
@@ -578,7 +573,6 @@ class BaseObservation(GridObjects):
                         "p_ex", "q_ex", "v_ex", "a_ex",
                         "time_before_cooldown_line",
                         "time_before_cooldown_sub",
-                        "time_before_line_reconnectable",
                         "time_next_maintenance",
                         "duration_next_maintenance",
                         "target_dispatch", "actual_dispatch"
@@ -590,7 +584,7 @@ class BaseObservation(GridObjects):
         return True
 
     @abstractmethod
-    def update(self, env):
+    def update(self, env, with_forecast=True):
         """
         Update the actual instance of BaseObservation with the new received value from the environment.
 
@@ -657,6 +651,52 @@ class BaseObservation(GridObjects):
         """
         raise NotImplementedError("This method is not implemented. ")
 
+    def get_forecasted_inj(self, time_step=0):
+        """
+        This function allows you to retrieve directly the "planned" injections for the timestep `time_step`
+
+        Parameters
+        ----------
+        time_step: ``int``
+            The horizon of the forecast;
+
+        Returns
+        -------
+        prod_p_f: ``numpy.ndarray``
+            The forecasted generators active values
+        prod_v_f: ``numpy.ndarray``
+            The forecasted generators voltage setpoins
+        load_p_f: ``numpy.ndarray``
+            The forecasted load active consumption
+        load_q_f: ``numpy.ndarray``
+            The forecasted load reactive consumption
+        """
+        if time_step >= len(self._forecasted_inj):
+            raise NoForecastAvailable("Forecast for {} timestep ahead is not possible with your chronics.".format(time_step))
+        a = self._forecasted_grid_act[time_step]["inj_action"]
+        prod_p_f = np.full(self.n_gen, fill_value=np.NaN, dtype=dt_float)
+        prod_v_f = np.full(self.n_gen, fill_value=np.NaN, dtype=dt_float)
+        load_p_f = np.full(self.n_load, fill_value=np.NaN, dtype=dt_float)
+        load_q_f = np.full(self.n_load, fill_value=np.NaN, dtype=dt_float)
+
+        if "prod_p" in a._dict_inj:
+            prod_p_f = a._dict_inj["prod_p"]
+        if "prod_v" in a._dict_inj:
+            prod_v_f = a._dict_inj["prod_v"]
+        if "load_p" in a._dict_inj:
+            load_p_f = a._dict_inj["load_p"]
+        if "load_q" in a._dict_inj:
+            load_q_f = a._dict_inj["load_q"]
+        tmp_arg = ~np.isfinite(prod_p_f)
+        prod_p_f[tmp_arg] = self.prod_p[tmp_arg]
+        tmp_arg = ~np.isfinite(prod_v_f)
+        prod_v_f[tmp_arg] = self.prod_v[tmp_arg]
+        tmp_arg = ~np.isfinite(load_p_f)
+        load_p_f[tmp_arg] = self.load_p[tmp_arg]
+        tmp_arg = ~np.isfinite(load_q_f)
+        load_q_f[tmp_arg] = self.load_q[tmp_arg]
+        return prod_p_f, prod_v_f, load_p_f, load_q_f
+
     def simulate(self, action, time_step=0):
         """
         This method is used to simulate the effect of an action on a forecasted powergrid state. It has the same return
@@ -696,16 +736,21 @@ class BaseObservation(GridObjects):
         if time_step >= len(self._forecasted_inj):
             raise NoForecastAvailable("Forecast for {} timestep ahead is not possible with your chronics.".format(time_step))
 
-        timestamp, inj_forecasted = self._forecasted_inj[time_step]
-        inj_action = self.action_helper(inj_forecasted)
-        # initialize the "simulation environment" with the proper injections
-        self._forecasted_grid[time_step] = self._obs_env.copy()
-        # TODO avoid un necessary copy above. Have one backend for all "simulate" and save instead the
-        # TODO obs_env._action that set the backend to the sate we want to simulate
-        self._forecasted_grid[time_step].init(inj_action, time_stamp=timestamp,
-                                              timestep_overflow=self.timestep_overflow)
+        if time_step not in self._forecasted_grid_act:
+            timestamp, inj_forecasted = self._forecasted_inj[time_step]
+            self._forecasted_grid_act[time_step] = {
+                "timestamp": timestamp,
+                "inj_action": self.action_helper(inj_forecasted)
+            }
 
-        return self._forecasted_grid[time_step].simulate(action)
+        timestamp = self._forecasted_grid_act[time_step]["timestamp"]
+        inj_action = self._forecasted_grid_act[time_step]["inj_action"]
+        self._obs_env.init(inj_action, time_stamp=timestamp,
+                           timestep_overflow=self.timestep_overflow,
+                           topo_vect=self.topo_vect)
+
+        sim_obs = self._obs_env.simulate(action)
+        return sim_obs
 
     def copy(self):
         """

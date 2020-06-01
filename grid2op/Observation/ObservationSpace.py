@@ -25,12 +25,12 @@ class ObservationSpace(SerializableObservationSpace):
 
     Attributes
     ----------
+    with_forecast: ``bool``
+        If ``True`` the :func:`BaseObservation.simulate` will be available. If ``False`` it will deactivate this
+        possibility. If `simulate` function is not used, setting it to ``False`` can lead to non neglectible speed-ups.
 
     observationClass: ``type``
         Class used to build the observations. It defaults to :class:`CompleteObservation`
-
-    _empty_obs: :class:`grid2op.Observation.BaseObservation`
-        An empty observation with the proper dimensions.
 
     parameters: :class:`grid2op.Parameters.Parameters`
         Type of Parameters used to compute powerflow for the forecast.
@@ -50,14 +50,15 @@ class ObservationSpace(SerializableObservationSpace):
         Instance of the environment used by the BaseObservation Helper to provide forcecast of the grid state.
 
     _empty_obs: :class:`BaseObservation`
-        An instance of the observation that is updated and will be sent to he BaseAgent.
+        An instance of the observation with appropriate dimensions. It is updated and will be sent to he BaseAgent.
 
     """
     def __init__(self,
                  gridobj,
                  env,
                  rewardClass=None,
-                 observationClass=CompleteObservation):
+                 observationClass=CompleteObservation,
+                 with_forecast=True):
         """
         Env: requires :attr:`grid2op.Environment.parameters` and :attr:`grid2op.Environment.backend` to be valid
         """
@@ -66,6 +67,7 @@ class ObservationSpace(SerializableObservationSpace):
 
         # TODO DOCUMENTATION !!!
 
+        self.with_forecast = with_forecast
         # print("ObservationSpace init with rewardClass: {}".format(rewardClass))
         self.parameters = copy.deepcopy(env.parameters)
         # for the observation, I switch between the _parameters for the environment and for the simulation
@@ -84,35 +86,44 @@ class ObservationSpace(SerializableObservationSpace):
         other_rewards = {k: v.rewardClass for k, v in env.other_rewards.items()}
 
         # TODO here: have another backend maybe
-        self.backend_obs = env.backend.copy()
+        self._backend_obs = env.backend.copy()
 
-        self.obs_env = _ObsEnv(backend_instanciated=self.backend_obs, obsClass=self.observationClass,
-                               parameters=env.parameters,
-                               reward_helper=self.reward_helper,
-                               action_helper=self.action_helper_env,
-                               thermal_limit_a=env._thermal_limit_a,
-                               legalActClass=env.legalActClass,
-                               donothing_act=env.helper_action_player(),
-                               other_rewards=other_rewards)
+        _ObsEnv_class = _ObsEnv.init_grid(self._backend_obs)
+        self.obs_env = _ObsEnv_class(backend_instanciated=self._backend_obs,
+                                     obsClass=self.observationClass,
+                                     parameters=env.parameters,
+                                     reward_helper=self.reward_helper,
+                                     action_helper=self.action_helper_env,
+                                     thermal_limit_a=env._thermal_limit_a,
+                                     legalActClass=env.legalActClass,
+                                     donothing_act=env.helper_action_player(),
+                                     other_rewards=other_rewards,
+                                     completeActionClass=env.helper_action_env.actionClass,
+                                     helper_action_class=env.helper_action_class,
+                                     helper_action_env=env.helper_action_env)
 
         for k, v in self.obs_env.other_rewards.items():
             v.initialize(env)
 
-        self._empty_obs = self.observationClass(gridobj=self,
-                                                obs_env=self.obs_env,
+        self._empty_obs = self.observationClass(obs_env=self.obs_env,
                                                 action_helper=self.action_helper_env)
         self._update_env_time = 0.
 
-    def __call__(self, env):
-        self.obs_env.update_grid(env)
+    def reset_space(self):
+        if self.with_forecast:
+            self.obs_env.reset_space()
+        self.action_helper_env.actionClass.reset_space()
 
-        res = self.observationClass(gridobj=self,
-                                    obs_env=self.obs_env,
+    def __call__(self, env):
+        if self.with_forecast:
+            self.obs_env.update_grid(env)
+
+        res = self.observationClass(obs_env=self.obs_env,
                                     action_helper=self.action_helper_env)
 
         # TODO how to make sure that whatever the number of time i call "simulate" i still get the same observations
         # TODO use self.obs_prng when updating actions
-        res.update(env=env)
+        res.update(env=env, with_forecast=self.with_forecast)
         return res
 
     def size_obs(self):

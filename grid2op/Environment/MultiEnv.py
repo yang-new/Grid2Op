@@ -8,14 +8,11 @@
 from multiprocessing import Process, Pipe
 import numpy as np
 
-from grid2op.dtypes import dt_int, dt_float, dt_bool
+from grid2op.dtypes import dt_int
 from grid2op.Exceptions import Grid2OpException, MultiEnvException
 from grid2op.Space import GridObjects
 from grid2op.Environment import Environment
 from grid2op.Action import BaseAction
-
-import pdb
-
 # TODO test this class.
 
 
@@ -37,6 +34,8 @@ class RemoteEnv(Process):
         self.parent_remote = parent_remote
         self.seed_used = seed
         self.space_prng = None
+        self.fast_forward = 0
+        self.all_seeds = []
 
     def init_env(self):
         """
@@ -56,8 +55,13 @@ class RemoteEnv(Process):
         self.space_prng.seed(seed=self.seed_used)
         self.backend = self.env_params["backendClass"]()
         del self.env_params["backendClass"]
+        chronics_handler = self.env_params["chronics_handler"]
         self.env = Environment(**self.env_params, backend=self.backend)
+        env_seed = self.space_prng.randint(np.iinfo(dt_int).max)
+        self.all_seeds = self.env.seed(env_seed)
         self.env.chronics_handler.shuffle(shuffler=lambda x: x[self.space_prng.choice(len(x), size=len(x), replace=False)])
+        # forecast are not forwarded with this method anyway
+        self.env.deactivate_forecast()
 
     def _clean_observation(self, obs):
         obs._forecasted_grid = []
@@ -69,14 +73,21 @@ class RemoteEnv(Process):
         # TODO dirty hack because of wrong chronics
         # need to check!!!
         conv = False
-        obs = None
+        obs_v = None
         while not conv:
             try:
                 obs = self.env.reset()
-                conv = True
+                if self.fast_forward > 0:
+                    self.env.fast_forward_chronics(self.space_prng.randint(0, self.fast_forward))
+                obs = self.env.get_obs()
+                obs_v = obs.to_vect()
+                if np.all(np.isfinite(obs_v)):
+                    # i make sure that everything is not Nan
+                    # other i consider it's "divergence" so "game over"
+                    conv = True
             except:
                 pass
-        return obs
+        return obs_v
 
     def run(self):
         if self.env is None:
@@ -88,17 +99,18 @@ class RemoteEnv(Process):
                 self.remote.send((self.env.observation_space, self.env.action_space))
             elif cmd == 's':
                 # perform a step
+                data = self.env.action_space.from_vect(data)
                 obs, reward, done, info = self.env.step(data)
-                if done:
+                obs_v = obs.to_vect()
+                if done or np.any(~np.isfinite(obs_v)):
                     # if done do a reset
-                    obs = self.get_obs_ifnotconv()
-                self._clean_observation(obs)
-                self.remote.send((obs, reward, done, info))
+                    obs_v = self.get_obs_ifnotconv()
+                self.remote.send((obs_v, reward, done, info))
             elif cmd == 'r':
                 # perfom a reset
-                obs = self.get_obs_ifnotconv()
-                self._clean_observation(obs)
-                self.remote.send(obs)
+                obs_v = self.get_obs_ifnotconv()
+                # self._clean_observation(obs)
+                self.remote.send(obs_v)
             elif cmd == 'c':
                 # close everything
                 self.env.close()
@@ -107,6 +119,13 @@ class RemoteEnv(Process):
             elif cmd == 'z':
                 # adapt the chunk size
                 self.env.set_chunk_size(data)
+            elif cmd == "f":
+                # fast forward the chronics when restart
+                self.fast_forward = int(data)
+            elif cmd == "seed":
+                self.remote.send((self.seed_used, self.all_seeds))
+            elif cmd == "params":
+                self.remote.send(self.env.parameters)
             else:
                 raise NotImplementedError
 
@@ -137,6 +156,15 @@ class MultiEnvironment(GridObjects):
     A broader support of regular grid2op environment capabilities as well as support for
     :func:`grid2op.Observation.BaseObservation.simulate` call will be added in the future.
 
+    **NB** if the backend class you use is not pickable, the :class:`MultiEnvironment`
+    will **NOT** be supported in Microsoft Windows based machine. However, you can always fall
+    back to use the default :class:`grid2op.Backend.PandaPowerBackend` in this case. This class
+    is compatible with multi environments in linux (tested on Fedora and Ubuntu) mac os (tested
+    on the latest macos release at time of writing) and windows 10 (latest update at time of
+    writing).
+
+    Examples
+    --------
     An example on how you can best leverage this class is given in the getting_started notebooks. Another simple example is:
 
     .. code-block:: python
@@ -188,20 +216,19 @@ class MultiEnvironment(GridObjects):
     """
     def __init__(self, nb_env, env):
         GridObjects.__init__(self)
-        # self.init_grid(env)
         self.imported_env = env
         self.nb_env = nb_env
-
+        max_int = np.iinfo(dt_int).max
         self._remotes, self._work_remotes = zip(*[Pipe() for _ in range(self.nb_env)])
 
         env_params = [env.get_kwargs() for _ in range(self.nb_env)]
         for el in env_params:
-            el["backendClass"] = type(env.backend)
+            el["backendClass"] = env._raw_backend_class
         self._ps = [RemoteEnv(env_params=env_,
                               remote=work_remote,
                               parent_remote=remote,
-                              name="env: {}".format(i),
-                              seed=np.random.randint(np.iinfo(dt_int).max))
+                              name="{}_subprocess_{}".format(env.name, i),
+                              seed=env.space_prng.randint(max_int))
                     for i, (work_remote, remote, env_) in enumerate(zip(self._work_remotes, self._remotes, env_params))]
 
         for p in self._ps:
@@ -214,13 +241,14 @@ class MultiEnvironment(GridObjects):
 
     def _send_act(self, actions):
         for remote, action in zip(self._remotes, actions):
-            remote.send(('s', action))
+            remote.send(('s', action.to_vect()))
         self._waiting = True
 
     def _wait_for_obs(self):
         results = [remote.recv() for remote in self._remotes]
         self._waiting = False
         obs, rews, dones, infos = zip(*results)
+        obs = [self.imported_env.observation_space.from_vect(ob) for ob in obs]
         return np.stack(obs), np.stack(rews), np.stack(dones), infos
 
     def step(self, actions):
@@ -279,7 +307,7 @@ class MultiEnvironment(GridObjects):
         """
         for remote in self._remotes:
             remote.send(('r', None))
-        res = [remote.recv() for remote in self._remotes]
+        res = [self.imported_env.observation_space.from_vect(remote.recv()) for remote in self._remotes]
         return np.stack(res)
 
     def close(self):
@@ -314,6 +342,39 @@ class MultiEnvironment(GridObjects):
 
         for remote in self._remotes:
             remote.send(('z', new_chunk_size))
+
+    def set_ff(self, ff_max=7*24*60/5):
+        """
+        This method is primarily used for training.
+
+        The problem this method aims at solving is the following: most of grid2op environments starts a Monday at
+        00:00. This method will "fast forward" an environment for a random number of timestep between 0 and ``ff_max``
+        """
+        try:
+            ff_max = int(ff_max)
+        except:
+            raise RuntimeError("ff_max parameters should be convertible to an integer.")
+
+        for remote in self._remotes:
+            remote.send(('f', ff_max))
+
+    def get_seeds(self):
+        """
+        Get the seeds used to initialize each sub environments.
+        """
+        for remote in self._remotes:
+            remote.send(('seed', None))
+        res = [remote.recv() for remote in self._remotes]
+        return np.stack(res)
+
+    def get_parameters(self):
+        """
+        Get the parameters of each sub environments
+        """
+        for remote in self._remotes:
+            remote.send(('params', None))
+        res = [remote.recv() for remote in self._remotes]
+        return res
 
 
 if __name__ == "__main__":

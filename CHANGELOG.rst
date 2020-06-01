@@ -8,21 +8,140 @@ Change Log
 - [???] test and doc for opponent
 - [???] better logging
 - [???] rationalize the public and private part of the API. Some members now are public but should be private.
-- [???] refacto the backend and the actions, backend you get set only, env takes care of the rest
-- [???] refacto the dataset handling
 - [???] better explanation of the notebook 3 with action silently
-- [???] see if "simulate" performances can be improved, and performances in general.
 - [???] simulate in MultiEnv
 - [???] in MultiEnv, when some converter of the observations are used, have each child process to compute
   it in parrallel and transfer the resulting data.
-- [???] fix notebook 3 to include code of new agents, and especially to work consistently with runner and env
-  (for now if you change default env, it doesn't affect the runner, so it crashes)
 - [???] modeled batteries / pumped storage in grid2op (generator but that can be charged / discharged)
 - [???] modeled dumps in grid2op (stuff that have a given energy max, and cannot produce more than the available energy)
 - [???] fix notebook 5 texts
 
+[0.9.3] - 2020-05-29
+---------------------
+- [FIXED] `Issue #69 <https://github.com/rte-france/Grid2Op/issues/69>`_ MultEnvironment is now working with windows
+  based OS.
+- [UPDATED] the first introductory notebook.
+- [UPDATED] possibility to reconnect / disconnect powerline giving its name when using `reconnect_powerline` and
+  `disconnect_powerline` methods of the action space.
+- [UPDATED] `Issue #105 <https://github.com/rte-france/Grid2Op/issues/105>`_ problem solved for notebook 4.
+  based OS.
+- [UPDATED] overall speed enhancement mostly in the `VoltageControler`, with the adding of the previous capability,
+  some updates in the `BackendAction`
+  `Issued #98 <https://github.com/rte-france/Grid2Op/issues/98>`_
+- [UPDATED] Added `PlotMatplot` constructor arguments to control display of names and IDs of the grid elements
+  (gen, load, lines). As suggested in `Issue #106 <https://github.com/rte-france/Grid2Op/issues/106>`_
+- [ADDED] `Issue #108 <https://github.com/rte-france/Grid2Op/issues/108>`_ Seed is now part of the public agent API.
+  The notebook has been updated accordingly.
+- [ADDED] Some function to disable the `obs.simulate` if wanted. This can lead to around 10~15% performance speed up
+  in case `obs.simulate` is not used. See `env.deactivate_forecast` and `env.reactivate_forecast`
+  (related to `Issued #98 <https://github.com/rte-france/Grid2Op/issues/98>`_)
 
-[0.7.1] - 2020-04-xx
+
+[0.9.2] - 2020-05-26
+---------------------
+- [FIXED] `GridObject` loading from file does initialize single values (`bool`, `int`, `float`)
+  correctly instead of creating a `np.array` of size one.
+- [FIXED] `IdToAct` loading actions from file .npy
+- [FIXED] a problem on the grid name import on some version of pandas
+- [ADDED] a function that returns the types of the action see `action.get_types()`
+- [ADDED] a class to "cache" the data in memory instead of reading it over an over again from disk (see
+  `grid2op.chronics.MultifolderWithCache` (related to `Issued #98 <https://github.com/rte-france/Grid2Op/issues/98>`_)
+- [ADDED] improve the documentation of the observation class.
+- [UPDATED] Reward `LinesReconnectedReward` to take into account maintenances downtimes
+- [UPDATED] Adds an option to disable plotting load and generators names when using `PlotMatplot`
+
+[0.9.1] - 2020-05-20
+---------------------
+- [FIXED] a bug preventing to save gif with episode replay when there has been a game over before starting time step
+- [FIXED] the issue of the random seed used in the environment for the runner.
+
+[0.9.0] - 2020-05-19
+----------------------
+- [BREAKING] `Issue #83 <https://github.com/rte-france/Grid2Op/issues/83>`_: attributes name of the Parameters class
+  are now more consistent with the rest of the package. Use `NB_TIMESTEP_OVERFLOW_ALLOWED`
+  instead of `NB_TIMESTEP_POWERFLOW_ALLOWED`, `NB_TIMESTEP_COOLDOWN_LINE` instead of `NB_TIMESTEP_LINE_STATUS_REMODIF`
+  and `NB_TIMESTEP_COOLDOWN_SUB` instead of `NB_TIMESTEP_TOPOLOGY_REMODIF`
+- [BREAKING] `Issue #87 <https://github.com/rte-france/Grid2Op/issues/87>`_: algorithm of the environment that solves
+  the redispatching to make sure the environment meet the phyiscal constraints is now cast into an optimization
+  routine that uses `scipy.minimize` to be solved. This has a few consequences: more dispatch actions are tolerated,
+  computation time can be increased in some cases, when the optimization problem cannot be solved, a game
+  over is thrown, `scipy` is now a direct dependency of `grid2op`, code base of `grid2op` is simpler.
+- [BREAKING] any attempt to use an un intialized environment (*eg* after a game over but before calling `env.reset`
+  will now raise a `Grid2OpException`)
+- [FIXED] `Issue #84 <https://github.com/rte-france/Grid2Op/issues/84>`_: it is now possible to load multiple
+  environments in the same python script and perform random action on each.
+- [FIXED] `Issue #86 <https://github.com/rte-france/Grid2Op/issues/86>`_: the proper symmetries are used to generate
+  all the actions that can "change" the buses (`SerializationActionSpace.get_all_unitary_topologies_change`).
+- [FIXED] `Issue #88 <https://github.com/rte-france/Grid2Op/issues/88>`_: two flags are now used to tell the environment
+  whether or not to activate the possibility to dispatch a turned on generator (`forbid_dispatch_off`) and whether
+  or not to ignore the gen_min_uptimes and gen_min_downtime propertiers (`ignore_min_up_down_times`) that
+  are initialized from the Parameters of the grid now.
+- [FIXED] `Issue #89 <https://github.com/rte-france/Grid2Op/issues/89>`_: pandapower backend should not be compatible
+  with changing the bus of the generator representing the slack bus.
+- [FIXED] Greedy agents now uses the proper data types `dt_float` for the simulated reward (previously it was platform
+  dependant)
+- [ADDED] A way to limit `EpisodeReplay` to a specific part of the episode. Two arguments have been added, namely:
+  `start_step` and `end_step` that default to the full episode duration.
+- [ADDED] more flexibilities in `IdToAct` converter not to generate every action for both set and change for example.
+  This class can also serialize and de serialize the list of all actions with the save method (to serialize) and the
+  `init_converter` method (to read back the data).
+- [ADDED] a feature to have multiple difficulty levels per dataset.
+- [ADDED] a converter to transform prediction in connectivity of element into valid grid2op action. See
+  `Converter.ConnectivitiyConverter` for more information.
+- [ADDED] a better control for the seeding strategy in `Environment` and `MultiEnvironment` to improve the
+  reproducibility of the experiments.
+- [ADDED] a chronics class that is able to generate maintenance data "on the fly" instead of reading the from a file.
+  This class is particularly handy to train agents with different kind of maintenance schedule.
+
+[0.8.2] - 2020-05-13
+----------------------
+- [FIXED] `Issue #75 <https://github.com/rte-france/Grid2Op/issues/75>`_: PlotGrid displays double powerlines correctly.
+- [FIXED] Action `+=` operator (aka. `__iadd__`) doesn't create warnings when manipulating identical arrays
+  containing `NaN` values.
+- [FIXED] `Issue #70 <https://github.com/rte-france/Grid2Op/issues/70>`_: for powerline disconnected, now the voltage
+  is properly set to `0.0`
+- [UPDATED] `Issue #40 <https://github.com/rte-france/Grid2Op/issues/40>`_: now it is possible to retrieve the forecast
+  of the injections without running an expensive "simulate" thanks to the `obs.get_forecasted_inj` method.
+- [UPDATED] `Issue #78 <https://github.com/rte-france/Grid2Op/issues/78>`_: parameters can be put as json in the
+  folder of the environment.
+- [UPDATED] minor fix for `env.make`
+- [UPDATED] Challenge tensorflow dependency to `tensorflow==2.2.0`
+- [UPDATED] `make` documentation to reflect API changes of 0.8.0
+
+[0.8.1] - 2020-05-05
+----------------------
+- [FIXED] `Issue #65 <https://github.com/rte-france/Grid2Op/issues/65>`_: now the length of the Episode Data is properly
+  computed
+- [FIXED] `Issue #66 <https://github.com/rte-france/Grid2Op/issues/66>`_: runner is now compatible with multiprocessing
+  again
+- [FIXED] `Issue #67 <https://github.com/rte-france/Grid2Op/issues/67>`_: L2RPNSandBoxReward is now properly computed
+- [FIXED] Serialization / de serialization of Parameters as json is now fixed
+
+[0.8.0] - 2020-05-04
+----------------------
+- [BREAKING] All previously deprecated features have been removed
+- [BREAKING] `grid2op.Runner` is now located into a submodule folder
+- [BREAKING]  merge of `env.time_before_line_reconnectable` into `env.times_before_line_status_actionable` which
+  referred to
+  the same idea: impossibility to reconnect a powerilne. **Side effect** observation have a different size now (
+  merging of `obs.time_before_line_reconnectable` into `obs.time_before_cooldown_line`). Size is now reduce of
+  the number of powerlines of the grid.
+- [BREAKING]  merge of `act.vars_action` into `env.attr_list_vect` which implemented the same concepts.
+- [BREAKING] the runner now save numpy compressed array to lower disk usage. Previous saved runner are not compatible.
+- [FIXED] `grid2op.PlotGrid` rounding error when casting from np.float32 to python.float
+- [FIXED] `grid2op.BaseEnv.fast_forward_chronics` Calls the correct methods and is now working properly
+- [FIXED] `__iadd__` is now properly implemented for the action with proper care given to action types.
+- [UPDATED] MultiEnv now exchange only numpy arrays and not class objects.
+- [UPDATED] Notebooks are updated to reflect API improvements changes
+- [UPDATED] `grid2op.make` can now handle the download & caching of datasets
+- [UPDATED] Test/Sample datasets provide datetime related files .info
+- [UPDATED] Test/Sample datasets grid_layout.json
+- [UPDATED] `grid2op.PlotGrid` Color schemes and optional infos displaying
+- [UPDATED] `grid2op.Episode.EpisodeReplay` Improved gif output performance
+- [UPDATED] Action and Observation are now created without having to call `init_grid(gridobject)` which lead to
+  small speed up and memory saving.
+
+[0.7.1] - 2020-04-22
 ----------------------
 - [FIXED] a bug in the chronics making it not start at the appropriate time step
 - [FIXED] a bug in "OneChangeThenNothing" agent that prevent it to be restarted properly.
@@ -31,10 +150,13 @@ Change Log
   floating value are always `np.float32` and integers are always `np.int32`
 - [ADDED] a method to extract only some part of a chronic.
 - [ADDED] a method to "fast forward" the chronics
-- [ADDED] class `grid2op.Reward.CombinedScaledReward`: A reward combiner with linear interpolation to stay within a given range.
-- [ADDED] `grid2op.Reward.BaseReward.set_range`: All rewards have a default setter for their `reward_min` and `reward_max` attributes.
+- [ADDED] class `grid2op.Reward.CombinedScaledReward`: A reward combiner with linear interpolation to stay within a
+  given range.
+- [ADDED] `grid2op.Reward.BaseReward.set_range`: All rewards have a default setter for their `reward_min` and
+  `reward_max` attributes.
 - [ADDED] `grid2op.PlotGrid`: Revamped plotting capabilities while keeping the interface we know from `grid2op.Plot`
-- [ADDED] `grid2op.replay` binary: This binary is installed with grid2op and allows to replay a runner log with visualization and gif export
+- [ADDED] `grid2op.replay` binary: This binary is installed with grid2op and allows to replay a runner log with
+  visualization and gif export
 - [ADDED] a `LicensesInformation` file that put a link for all dependencies of the project.
 - [ADDED] make multiple dockers, one for testing, one for distribution with all extra, and one "light"
 - [UPDATED] test data and datasets are no longer included in the package distribution
@@ -64,11 +186,13 @@ Change Log
   operations only
 - [ADDED] `grid2op.Action.PowerlineSetAndDispatchAction` A subset of actions to limit the agents scope to 'set line'
   and 'dispatch' operations only
-- [ADDED] `grid2op.Action.PowerlineSetAction` A subset of actions to limit the agents scope to 'set line' operations only
+- [ADDED] `grid2op.Action.PowerlineSetAction` A subset of actions to limit the agents scope to 'set line' operations
+  only
 - [ADDED] `grid2op.Action.TopologySetAction` A subset of actions to limit the agents scope to 'set' operations only
 - [ADDED] `grid2op.Action.TopologySetAndDispatchAction` A subset of actions to limit the agents scope to 'set' and
   'redisp' operations only
-- [ADDED] `grid2op.Action.TopologyChangeAction` A subset of actions to limit the agents scope to 'change' operations only
+- [ADDED] `grid2op.Action.TopologyChangeAction` A subset of actions to limit the agents scope to 'change' operations
+  only
 - [ADDED] `grid2op.Action.TopologyChangeAndDispatchAction` A subset of actions to limit the agents scope to 'change'
   and 'redisp' operations only
 - [ADDED] `grid2op.Action.DispatchAction` A subset of actions to limit the agents scope to 'redisp' operations only
@@ -104,7 +228,8 @@ Change Log
 - [ADDED] CombinedReward. A reward combiner to compute a weighted sum of other rewards.
 - [ADDED] CloseToOverflowReward. A reward that penalize agents when lines have almost reached max capacity.
 - [ADDED] DistanceReward. A reward based on how far way from the original topology the current grid is.
-- [ADDED] BridgeReward. A reward based on graph connectivity, see implementation in grid2op.Reward.BridgeReward for details
+- [ADDED] BridgeReward. A reward based on graph connectivity, see implementation in grid2op.Reward.BridgeReward for
+  details
 
 [0.6.0] - 2020-04-03
 ---------------------
@@ -307,32 +432,32 @@ Change Log
 - [BREAKING] previous saved BaseAction Spaces and BaseObservation Spaces (as dictionnary) are no more compatible
 - [BREAKING] renaming of attributes describing the powergrid across classes for better consistency:
 
-====================  =======================  =======================
-Class Name            Old Attribute Name       New Attribute Name
-====================  =======================  =======================
-Backend               n_lines                  n_line
-Backend               n_generators             n_gen
-Backend               n_loads                  n_load
-Backend               n_substations            n_sub
-Backend               subs_elements            sub_info
-Backend               name_loads               name_load
-Backend               name_prods               name_gen
-Backend               name_lines               name_line
-Backend               name_subs                name_sub
-Backend               lines_or_to_subid        line_or_to_subid
-Backend               lines_ex_to_subid        line_ex_to_subid
-Backend               lines_or_to_sub_pos      line_or_to_sub_pos
-Backend               lines_ex_to_sub_pos      line_ex_to_sub_pos
-Backend               lines_or_pos_topo_vect   line_or_pos_topo_vect
-Backend               lines_ex_pos_topo_vect   lines_ex_pos_topo_vect
-BaseAction / BaseObservation  _lines_or_to_subid       line_or_to_subid
-BaseAction / BaseObservation  _lines_ex_to_subid       line_ex_to_subid
-BaseAction / BaseObservation  _lines_or_to_sub_pos     line_or_to_sub_pos
-BaseAction / BaseObservation  _lines_ex_to_sub_pos     line_ex_to_sub_pos
-BaseAction / BaseObservation  _lines_or_pos_topo_vect  line_or_pos_topo_vect
-BaseAction / BaseObservation  _lines_ex_pos_topo_vect  lines_ex_pos_topo_vect
-GridValue             n_lines                  n_line
-====================  =======================  =======================
+=============================    =======================  =======================
+Class Name                       Old Attribute Name       New Attribute Name
+=============================    =======================  =======================
+Backend                           n_lines                  n_line
+Backend                           n_generators             n_gen
+Backend                           n_loads                  n_load
+Backend                           n_substations            n_sub
+Backend                           subs_elements            sub_info
+Backend                           name_loads               name_load
+Backend                           name_prods               name_gen
+Backend                           name_lines               name_line
+Backend                           name_subs                name_sub
+Backend                           lines_or_to_subid        line_or_to_subid
+Backend                           lines_ex_to_subid        line_ex_to_subid
+Backend                           lines_or_to_sub_pos      line_or_to_sub_pos
+Backend                           lines_ex_to_sub_pos      line_ex_to_sub_pos
+Backend                           lines_or_pos_topo_vect   line_or_pos_topo_vect
+Backend                           lines_ex_pos_topo_vect   lines_ex_pos_topo_vect
+BaseAction / BaseObservation     _lines_or_to_subid       line_or_to_subid
+BaseAction / BaseObservation     _lines_ex_to_subid       line_ex_to_subid
+BaseAction / BaseObservation     _lines_or_to_sub_pos     line_or_to_sub_pos
+BaseAction / BaseObservation     _lines_ex_to_sub_pos     line_ex_to_sub_pos
+BaseAction / BaseObservation     _lines_or_pos_topo_vect  line_or_pos_topo_vect
+BaseAction / BaseObservation     _lines_ex_pos_topo_vect  lines_ex_pos_topo_vect
+GridValue                        n_lines                  n_line
+=============================    =======================  =======================
 
 - [FIXED] Runner cannot save properly action and observation (sizes are not computed properly)
   **now fixed and unit test added**

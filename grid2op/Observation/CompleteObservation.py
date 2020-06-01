@@ -9,7 +9,7 @@
 import numpy as np
 import copy
 
-from grid2op.dtypes import dt_int, dt_float, dt_bool
+from grid2op.dtypes import dt_int, dt_float
 from grid2op.Observation.BaseObservation import BaseObservation
 
 
@@ -70,16 +70,13 @@ class CompleteObservation(BaseObservation):
             [:attr:`grid2op.Space.GridObjects.n_line` elements]
         26. :attr:`BaseObservation.time_before_cooldown_sub` representation of the cooldown time on the substations
             [:attr:`grid2op.Space.GridObjects.n_sub` elements]
-        27. :attr:`BaseObservation.time_before_line_reconnectable` number of timestep to wait before a powerline
-            can be reconnected (it is disconnected due to maintenance, cascading failure or overflow)
-            [:attr:`grid2op.Space.GridObjects.n_line` elements]
-        28. :attr:`BaseObservation.time_next_maintenance` number of timestep before the next maintenance (-1 means
+        27. :attr:`BaseObservation.time_next_maintenance` number of timestep before the next maintenance (-1 means
             no maintenance are planned, 0 a maintenance is in operation) [:attr:`BaseObservation.n_line` elements]
-        29. :attr:`BaseObservation.duration_next_maintenance` duration of the next maintenance. If a maintenance
+        28. :attr:`BaseObservation.duration_next_maintenance` duration of the next maintenance. If a maintenance
             is taking place, this is the number of timestep before it ends. [:attr:`BaseObservation.n_line` elements]
-        30. :attr:`BaseObservation.target_dispatch` the target dispatch for each generator
+        29. :attr:`BaseObservation.target_dispatch` the target dispatch for each generator
             [:attr:`grid2op.Space.GridObjects.n_gen` elements]
-        31. :attr:`BaseObservation.actual_dispatch` the actual dispatch for each generator
+        30. :attr:`BaseObservation.actual_dispatch` the actual dispatch for each generator
             [:attr:`grid2op.Space.GridObjects.n_gen` elements]
 
     This behavior is specified in the :attr:`BaseObservation.attr_list_vect` vector.
@@ -91,12 +88,12 @@ class CompleteObservation(BaseObservation):
         :func:`CompleteObservation.to_dict` for a description of this dictionnary.
 
     """
-    def __init__(self, gridobj,
+    def __init__(self,
                  obs_env=None,
                  action_helper=None,
                  seed=None):
 
-        BaseObservation.__init__(self, gridobj,
+        BaseObservation.__init__(self,
                                  obs_env=obs_env,
                                  action_helper=action_helper,
                                  seed=seed)
@@ -112,7 +109,6 @@ class CompleteObservation(BaseObservation):
             "line_status", "timestep_overflow",
             "topo_vect",
             "time_before_cooldown_line", "time_before_cooldown_sub",
-            "time_before_line_reconnectable",
             "time_next_maintenance", "duration_next_maintenance",
             "target_dispatch", "actual_dispatch"
         ]
@@ -123,7 +119,7 @@ class CompleteObservation(BaseObservation):
         self.vectorized = None
         self.dictionnarized = None
 
-    def update(self, env):
+    def update(self, env, with_forecast=True):
         """
         This use the environement to update properly the BaseObservation.
 
@@ -157,18 +153,19 @@ class CompleteObservation(BaseObservation):
         self.p_ex[:], self.q_ex[:], self.v_ex[:], self.a_ex[:] = env.backend.lines_ex_info()
 
         # handles forecasts here
-        self._forecasted_inj = env.chronics_handler.forecasts()
-        for i in range(len(self._forecasted_grid)):
-            # in the action, i assign the lat topology known, it's a choice here...
-            self._forecasted_grid[i]["setbus"] = self.topo_vect
+        if with_forecast:
+            self._forecasted_inj = env.chronics_handler.forecasts()
+            for grid_act in self._forecasted_grid_act.values():
+                # in the action, i assign the lat topology known, it's a choice here...
+                grid_act["inj_action"]["setbus"] = self.topo_vect
 
-        self._forecasted_grid = [None for _ in self._forecasted_inj]
+            self._forecasted_grid = [None for _ in self._forecasted_inj]
+
         self.rho = env.backend.get_relative_flow().astype(dt_float)
 
         # cool down and reconnection time after hard overflow, soft overflow or cascading failure
         self.time_before_cooldown_line[:] = env.times_before_line_status_actionable
         self.time_before_cooldown_sub[:] = env.times_before_topology_actionable
-        self.time_before_line_reconnectable[:] = env.time_remaining_before_line_reconnection
         self.time_next_maintenance[:] = env.time_next_maintenance
         self.duration_next_maintenance[:] = env.duration_next_maintenance
 
@@ -234,7 +231,6 @@ class CompleteObservation(BaseObservation):
             self.dictionnarized["cooldown"] = {}
             self.dictionnarized["cooldown"]['line'] = self.time_before_cooldown_line
             self.dictionnarized["cooldown"]['substation'] = self.time_before_cooldown_sub
-            self.dictionnarized["time_before_line_reconnectable"] = self.time_before_line_reconnectable
             self.dictionnarized["redispatching"] = {}
             self.dictionnarized["redispatching"]["target_redispatch"] = self.target_dispatch
             self.dictionnarized["redispatching"]["actual_dispatch"] = self.actual_dispatch
@@ -339,7 +335,5 @@ class CompleteObservation(BaseObservation):
 
                 self.bus_connectivity_matrix_[bus_id_or, bus_id_ex] = 1
                 self.bus_connectivity_matrix_[bus_id_ex, bus_id_or] = 1
-                # except:
-                #     pdb.set_trace()
         return self.bus_connectivity_matrix_
 

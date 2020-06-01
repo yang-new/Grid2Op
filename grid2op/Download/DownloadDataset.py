@@ -21,7 +21,6 @@ import re
 import tarfile
 
 from grid2op.Exceptions import Grid2OpException
-import pdb
 
 try:
     import urllib.request
@@ -63,14 +62,15 @@ def download_url(url, output_path):
         urllib.request.urlretrieve(url, filename=output_path, reporthook=t.update_to)
 
 
-def _aux_download(url, dataset_name, path_data):
-    ds_name_dl = dataset_name
+def _aux_download(url, dataset_name, path_data, ds_name_dl=None):
+    if ds_name_dl is None:
+        ds_name_dl = dataset_name
     final_path = os.path.join(path_data, ds_name_dl)
     if os.path.exists(final_path):
         str_ = "Downloading and extracting this data would create a folder \"{final_path}\" " \
               "but this folder already exists. Either you already downloaded the data, in this case " \
               "you can invoke the environment from a python script with:\n" \
-              "\t env = grid2op.make2(\"{final_path}\")\n" \
+              "\t env = grid2op.make(\"{final_path}\")\n" \
               "Alternatively you can also delete the folder \"{final_path}\" from your computer and run this command " \
               "again.\n" \
               "Finally, you can download the data in a different folder by specifying (in a command prompt):\n" \
@@ -81,7 +81,7 @@ def _aux_download(url, dataset_name, path_data):
 
     if not os.path.exists(path_data):
         print("Creating path \"{}\" where data for \"{}\" environment will be downloaded."
-              "".format(path_data, dataset_name))
+              "".format(path_data, ds_name_dl))
         try:
             os.mkdir(path_data)
         except Exception as e:
@@ -101,9 +101,18 @@ def _aux_download(url, dataset_name, path_data):
     print("Extract the tar archive in \"{}\"".format(os.path.abspath(path_data)))
     tar.extractall(path_data)
     tar.close()
+
+    # rename the file if necessary
+    if ds_name_dl != dataset_name:
+        os.rename(final_path, os.path.join(path_data, dataset_name))
+
+    # and rm the tar bz2
+    # bug in the AWS file... named ".tar.tar.bz2" ...
+    os.remove(output_path)
+
     print("You may now use the environment \"{}\" with the available data by invoking:\n"
-          "\tenv = grid2op.make2(\"{}\")"
-          "".format(dataset_name, final_path))
+          "\tenv = grid2op.make(\"{}\")"
+          "".format(dataset_name, dataset_name))
 
 
 def main_download(dataset_name, path_data):

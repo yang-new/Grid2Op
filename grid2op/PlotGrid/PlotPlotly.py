@@ -7,13 +7,15 @@
 # This file is part of Grid2Op, Grid2Op a testbed platform to model sequential decision making in power systems.
 
 import numpy as np
-import plotly.graph_objects as go
-import plotly.colors as pc
 import imageio
 import warnings
 
+# lazy loading of plotting utilities, to save loading time
+import plotly.graph_objects as go
+import plotly.colors as pc
+
+
 from grid2op.PlotGrid.BasePlot import BasePlot
-from grid2op.PlotGrid.LayoutUtil import layout_obs_sub_load_and_gen
 from grid2op.PlotGrid.PlotUtil import PlotUtil as pltu
 
 
@@ -25,11 +27,14 @@ class PlotPlotly(BasePlot):
                  grid_layout=None,
                  responsive=False,
                  scale=2000.0,
-                 sub_radius = 30,
-                 load_radius = 15,
-                 gen_radius = 15):
-        self._scale = scale
-        super().__init__(observation_space, width, height, grid_layout)
+                 sub_radius = 25,
+                 load_radius = 12,
+                 gen_radius = 12,
+                 show_gen_txt=False,
+                 show_load_txt=False):
+        super().__init__(observation_space, width, height, scale, grid_layout)
+        self.show_gen_txt = show_gen_txt
+        self.show_load_txt = show_load_txt
         self._responsive = responsive
         self._sub_radius = sub_radius
         self._sub_fill_color = "PaleTurquoise"
@@ -54,7 +59,7 @@ class PlotPlotly(BasePlot):
                                  pc.sequential.Oranges[4:6] + \
                                  pc.sequential.Reds[-3: -1]
         self._line_bus_radius = 10
-        self._line_bus_colors = ["black", "red", "magenta"]
+        self._line_bus_colors = ["black", "red", "lime"]
         self._bus_prefix = "_bus_"
         self._or_prefix = "_or_"
         self._ex_prefix = "_ex_"
@@ -103,16 +108,12 @@ class PlotPlotly(BasePlot):
             warnings.warn("Plotly need additional dependencies for offline rendering")
             return np.full((self.height , self.width, 3), 255, dtype=np.unit8)
 
-    def compute_grid_layout(self, obs_space, grid_layout = None):
-        # We overload to specify the scale
-        # Also we expect obs_space has a grid_layout
-        return layout_obs_sub_load_and_gen(obs_space, self._scale, True)
-
     def _draw_substation_txt(self, name, pos_x, pos_y, text):
         return go.Scatter(x=[pos_x], y=[pos_y],
                           text=[text], mode="text",
                           name=name,
                           textposition="middle center",
+                          hoverinfo='skip',
                           showlegend=False)
 
     def _draw_substation_circle(self, name, pos_x, pos_y):
@@ -127,9 +128,9 @@ class PlotPlotly(BasePlot):
         )
         return go.Scatter(x=[pos_x], y=[pos_y],
                           mode="markers",
+                          text=[name],
                           name=self._sub_prefix + name,
                           marker=marker_dict,
-                          hoverinfo='skip',
                           showlegend=False)
 
     def draw_substation(self, figure, observation,
@@ -146,10 +147,11 @@ class PlotPlotly(BasePlot):
         return go.Scatter(x=[pos_x], y=[pos_y],
                           text=[text], mode="text",
                           name=name,
+                          hoverinfo='skip',
                           textposition=textpos,
                           showlegend=False)
 
-    def _draw_load_circle(self, pos_x, pos_y, name):
+    def _draw_load_circle(self, pos_x, pos_y, name, text):
         marker_dict = dict(
             size = self._load_radius,
             color=self._load_fill_color,
@@ -161,9 +163,9 @@ class PlotPlotly(BasePlot):
         )
         return go.Scatter(x=[pos_x], y=[pos_y],
                           mode="markers",
+                          text=[text],
                           name=self._load_prefix + name,
                           marker=marker_dict,
-                          hoverinfo='skip',
                           showlegend=False)
     
     def _draw_load_line(self, pos_x, pos_y, sub_x, sub_y):
@@ -185,8 +187,8 @@ class PlotPlotly(BasePlot):
             color = self._line_bus_colors[bus],
             showscale = False
         )
-        center_x = pos_x + (dir_x * self._sub_radius / 2)
-        center_y = pos_y + (dir_y * self._sub_radius / 2)
+        center_x = pos_x + dir_x * (self._sub_radius - self._line_bus_radius)
+        center_y = pos_y + dir_y * (self._sub_radius - self._line_bus_radius)
         trace_name = self._load_prefix + self._bus_prefix + load_name
         return go.Scatter(x=[center_x], y=[center_y],
                           marker=marker_dict,
@@ -199,21 +201,24 @@ class PlotPlotly(BasePlot):
                   load_value, load_unit,
                   pos_x, pos_y,
                   sub_x, sub_y):
-        load_text = load_name + "<br>"
-        load_text += pltu.format_value_unit(load_value, load_unit)
         dir_x, dir_y = pltu.norm_from_points(sub_x, sub_y, pos_x, pos_y)
         nd_x, nd_y = pltu.norm_from_points(sub_x, sub_y, pos_x, pos_y)
-        txt_x = pos_x + nd_x * (self._load_radius / 2)
-        txt_y = pos_y + nd_y * (self._load_radius / 2)
-        text_pos = self._textpos_from_dir(dir_x, dir_y)
-        
-        trace1 = self._draw_load_txt(load_name,
-                                     txt_x, txt_y,
-                                     load_text, text_pos)
-        figure.add_trace(trace1)
+        load_text = ""
+        if load_value is not None:
+            txt_x = pos_x + nd_x * (self._load_radius / 2)
+            txt_y = pos_y + nd_y * (self._load_radius / 2)
+            text_pos = self._textpos_from_dir(dir_x, dir_y)
+            load_text = load_name + "<br>"
+            load_text += pltu.format_value_unit(load_value, load_unit)
+            if self.show_load_txt:
+                trace1 = self._draw_load_txt(load_name,
+                                             txt_x, txt_y,
+                                             load_text, text_pos)
+                figure.add_trace(trace1)
+
         trace2 = self._draw_load_line(pos_x, pos_y, sub_x, sub_y)
         figure.add_trace(trace2)
-        trace3 = self._draw_load_circle(pos_x, pos_y, load_name)
+        trace3 = self._draw_load_circle(pos_x, pos_y, load_name, load_text)
         figure.add_trace(trace3)
 
         trace4 = self._draw_load_bus(sub_x, sub_y, dir_x, dir_y, load_bus, load_name)
@@ -224,10 +229,16 @@ class PlotPlotly(BasePlot):
                     load_value, load_unit,
                     pos_x, pos_y,
                     sub_x, sub_y):
-        load_text = load_name + "<br>"
-        load_text += pltu.format_value_unit(load_value, load_unit)
-        figure.update_traces(text=load_text,
-                             selector=dict(name=load_name))
+        load_text = ""
+        if load_value is not None:
+            load_text = load_name + "<br>"
+            load_text += pltu.format_value_unit(load_value, load_unit)
+            if self.show_load_txt:
+                figure.update_traces(text=load_text,
+                                     selector=dict(name=load_name))
+            circle_name = self._load_prefix + load_name
+            figure.update_traces(text=load_text,
+                                 selector=dict(name=circle_name))
         load_marker = dict(color=self._line_bus_colors[load_bus])
         load_select_name = self._load_prefix + self._bus_prefix + load_name
         figure.update_traces(marker=load_marker, selector=dict(name=load_select_name))
@@ -237,10 +248,11 @@ class PlotPlotly(BasePlot):
         return go.Scatter(x=[pos_x], y=[pos_y],
                           text=[text], name=name,
                           mode="text",
+                          hoverinfo='skip',
                           textposition=text_pos,
                           showlegend=False)
 
-    def _draw_gen_circle(self, pos_x, pos_y, name):
+    def _draw_gen_circle(self, pos_x, pos_y, name, text):
         marker_dict = dict(
             size = self._gen_radius,
             color=self._gen_fill_color,
@@ -252,9 +264,9 @@ class PlotPlotly(BasePlot):
         )
         return go.Scatter(x=[pos_x], y=[pos_y],
                           mode="markers",
+                          text=[text],
                           name=self._gen_prefix + name,
                           marker=marker_dict,
-                          hoverinfo='skip',
                           showlegend=False)
     
     def _draw_gen_line(self, pos_x, pos_y, sub_x, sub_y):
@@ -277,8 +289,8 @@ class PlotPlotly(BasePlot):
             color = self._line_bus_colors[bus],
             showscale = False
         )
-        center_x = pos_x + (dir_x * self._sub_radius / 2)
-        center_y = pos_y + (dir_y * self._sub_radius / 2)
+        center_x = pos_x + dir_x * (self._sub_radius - self._line_bus_radius)
+        center_y = pos_y + dir_y * (self._sub_radius - self._line_bus_radius)
         trace_name = self._gen_prefix + self._bus_prefix + gen_name
         return go.Scatter(x=[center_x], y=[center_y],
                           marker=marker_dict,
@@ -292,21 +304,23 @@ class PlotPlotly(BasePlot):
                  pos_x, pos_y,
                  sub_x, sub_y):
 
-        gen_text = gen_name + "<br>"
-        gen_text += pltu.format_value_unit(gen_value, gen_unit)
         dir_x, dir_y = pltu.norm_from_points(sub_x, sub_y, pos_x, pos_y)
         nd_x, nd_y = pltu.norm_from_points(sub_x, sub_y, pos_x, pos_y)
-        txt_x = pos_x + nd_x * (self._gen_radius / 2)
-        txt_y = pos_y + nd_y * (self._gen_radius / 2)
-        text_pos = self._textpos_from_dir(dir_x, dir_y)
-
-        trace1 = self._draw_gen_txt(gen_name,
-                                    txt_x, txt_y,
-                                    gen_text, text_pos)
-        figure.add_trace(trace1)
+        gen_text = ""
+        if gen_value is not None:
+            txt_x = pos_x + nd_x * (self._gen_radius / 2)
+            txt_y = pos_y + nd_y * (self._gen_radius / 2)
+            text_pos = self._textpos_from_dir(dir_x, dir_y)
+            gen_text = gen_name + "<br>"
+            gen_text += pltu.format_value_unit(gen_value, gen_unit)
+            if self.show_gen_txt:
+                trace1 = self._draw_gen_txt(gen_name,
+                                            txt_x, txt_y,
+                                            gen_text, text_pos)
+                figure.add_trace(trace1)
         trace2 = self._draw_gen_line(pos_x, pos_y, sub_x, sub_y)
         figure.add_trace(trace2)
-        trace3 = self._draw_gen_circle(pos_x, pos_y, gen_name)
+        trace3 = self._draw_gen_circle(pos_x, pos_y, gen_name, gen_text)
         figure.add_trace(trace3)
         trace4 = self._draw_gen_bus(sub_x, sub_y, dir_x, dir_y, gen_bus, gen_name)
         figure.add_trace(trace4)
@@ -316,10 +330,16 @@ class PlotPlotly(BasePlot):
                    gen_value, gen_unit,
                    pos_x, pos_y,
                    sub_x, sub_y):
-        gen_text = gen_name + "<br>"
-        gen_text += pltu.format_value_unit(gen_value, gen_unit)
-        figure.update_traces(text=gen_text,
-                             selector=dict(name=gen_name))
+        gen_text = ""
+        if gen_value is not None:
+            gen_text = gen_name + "<br>"
+            gen_text += pltu.format_value_unit(gen_value, gen_unit)
+            if self.show_gen_txt:
+                figure.update_traces(text=gen_text,
+                                     selector=dict(name=gen_name))
+            circle_name = self._gen_prefix + gen_name
+            figure.update_traces(text=gen_text,
+                                 selector=dict(name=circle_name))
         gen_marker = dict(color=self._line_bus_colors[gen_bus])
         gen_select_name = self._gen_prefix + self._bus_prefix + gen_name
         figure.update_traces(marker=gen_marker, selector=dict(name=gen_select_name))
@@ -366,8 +386,8 @@ class PlotPlotly(BasePlot):
             color = self._line_bus_colors[bus],
             showscale = False
         )
-        center_x = pos_x + (dir_x * self._sub_radius / 2)
-        center_y = pos_y + (dir_y * self._sub_radius / 2)
+        center_x = pos_x + dir_x * (self._sub_radius - self._line_bus_radius)
+        center_y = pos_y + dir_y * (self._sub_radius - self._line_bus_radius)
         trace_name = self._line_prefix + self._bus_prefix + side_prefix + line_name
         return go.Scatter(x=[center_x], y=[center_y],
                           marker=marker_dict,
@@ -450,21 +470,24 @@ class PlotPlotly(BasePlot):
 
         color_scheme = self.line_color_scheme
         capacity = observation.rho[line_id]
+        capacity = np.clip(capacity, 0.0, 1.0)
         color = color_scheme[int(capacity  * float(len(color_scheme) - 1))]
         if capacity == 0.0:
             color = "black"
         line_style = dict(dash=None if connected else "dash",
                           color=color)
-        line_text = pltu.format_value_unit(line_value, line_unit)
-        trace1 = self._draw_powerline_txt(line_name,
-                                          pos_or_x, pos_or_y,
-                                          pos_ex_x, pos_ex_y,
-                                          line_text)
+        line_text = ""
+        if line_value is not None:
+            line_text = pltu.format_value_unit(line_value, line_unit)
+            trace1 = self._draw_powerline_txt(line_name,
+                                              pos_or_x, pos_or_y,
+                                              pos_ex_x, pos_ex_y,
+                                              line_text)
+            figure.add_trace(trace1)
         trace2 = self._draw_powerline_line(line_name,
                                            pos_or_x, pos_or_y,
                                            pos_ex_x, pos_ex_y,
                                            line_style)
-        figure.add_trace(trace1)
         figure.add_trace(trace2)
         dir_x, dir_y = pltu.norm_from_points(pos_or_x, pos_or_y, pos_ex_x, pos_ex_y)
         trace3 = self._draw_powerline_bus(pos_or_x, pos_or_y,
@@ -494,11 +517,12 @@ class PlotPlotly(BasePlot):
         color = color_scheme[color_idx]
         if capacity == 0.0:
             color = "black"
-        line_style = dict(dash=None if connected else "dash", color=color)
-        line_text = pltu.format_value_unit(line_value, line_unit)
+        if line_value is not None:
+            line_text = pltu.format_value_unit(line_value, line_unit)
+            figure.update_traces(text=line_text,
+                                 selector=dict(name=line_name))
 
-        figure.update_traces(text=line_text,
-                             selector=dict(name=line_name))
+        line_style = dict(dash=None if connected else "dash", color=color)
         figure.update_traces(line=line_style,
                              selector=dict(name=self._line_prefix + line_name))
 

@@ -9,8 +9,6 @@
 import numpy as np
 import itertools
 
-import pdb
-
 from grid2op.dtypes import dt_int, dt_float, dt_bool
 from grid2op.Exceptions import AmbiguousAction, Grid2OpException
 from grid2op.Space import SerializableSpace
@@ -50,8 +48,8 @@ class SerializableActionSpace(SerializableSpace):
         """
         SerializableSpace.__init__(self, gridobj=gridobj, subtype=actionClass)
 
-        self.actionClass = self.subtype
-        self._template_act = self._template_obj
+        self.actionClass = actionClass.init_grid(gridobj)
+        self._template_act = self.actionClass()
 
     @staticmethod
     def from_dict(dict_):
@@ -87,11 +85,11 @@ class SerializableActionSpace(SerializableSpace):
             A random action sampled from the :attr:`ActionSpace.actionClass`
 
         """
-        res = self.actionClass(gridobj=self)  # only the GridObjects part of "self" is actually used
+        res = self.actionClass()  # only the GridObjects part of "self" is actually used
         res.sample()
         return res
 
-    def disconnect_powerline(self, line_id, previous_action=None):
+    def disconnect_powerline(self, line_id=None, line_name=None, previous_action=None):
         """
         Utilities to disconnect a powerline more easily.
 
@@ -100,14 +98,28 @@ class SerializableActionSpace(SerializableSpace):
         line_id: ``int``
             The powerline to be disconnected.
 
+        line_name: ``str``
+            Name of the powerline. Note that either line_id or line_name should be provided. If both are provided, it is
+            an error, if none are provided it is an error.
+
         previous_action
 
         Returns
         -------
 
         """
+        if line_id is None and line_name is None:
+            raise AmbiguousAction("You need to provide either the \"line_id\" or the \"line_name\" of the powerline "
+                                  "you want to disconnect")
+        if line_id is not None and line_name is not None:
+            raise AmbiguousAction("You need to provide only of the \"line_id\" or the \"line_name\" of the powerline "
+                                  "you want to disconnect")
+
+        if line_id is None:
+            line_id = np.where(self.name_line == line_name)[0]
+
         if previous_action is None:
-            res = self.actionClass(gridobj=self)
+            res = self.actionClass()
         else:
             if not isinstance(previous_action, self.actionClass):
                 raise AmbiguousAction("The action to update using `ActionSpace` is of type \"{}\" "
@@ -120,7 +132,7 @@ class SerializableActionSpace(SerializableSpace):
         res.update({"set_line_status": [(line_id, -1)]})
         return res
 
-    def reconnect_powerline(self, line_id, bus_or, bus_ex, previous_action=None):
+    def reconnect_powerline(self, bus_or, bus_ex, line_id=None, line_name=None, previous_action=None):
         """
         Utilities to reconnect a powerline more easily.
 
@@ -143,8 +155,18 @@ class SerializableActionSpace(SerializableSpace):
         -------
 
         """
+        if line_id is None and line_name is None:
+            raise AmbiguousAction("You need to provide either the \"line_id\" or the \"line_name\" of the powerline "
+                                  "you want to reconnect")
+        if line_id is not None and line_name is not None:
+            raise AmbiguousAction("You need to provide only of the \"line_id\" or the \"line_name\" of the powerline "
+                                  "you want to reconnect")
+
+        if line_id is None:
+            line_id = np.where(self.name_line == line_name)[0]
+
         if previous_action is None:
-            res = self.actionClass(gridobj=self)
+            res = self.actionClass()
         else:
             if not isinstance(previous_action, self.actionClass):
                 raise AmbiguousAction("The action to update using `ActionSpace` is of type \"{}\" "
@@ -193,7 +215,7 @@ class SerializableActionSpace(SerializableSpace):
 
         """
         if previous_action is None:
-            res = self.actionClass(gridobj=self)
+            res = self.actionClass()
         else:
             if not isinstance(previous_action, self.actionClass):
                 raise AmbiguousAction("The action to update using `ActionSpace` is of type \"{}\" "
@@ -313,7 +335,7 @@ class SerializableActionSpace(SerializableSpace):
 
         """
         if previous_action is None:
-            res = self.actionClass(gridobj=self)
+            res = self.actionClass()
         else:
             res = previous_action
 
@@ -398,17 +420,19 @@ class SerializableActionSpace(SerializableSpace):
         res = []
         S = [0, 1]
         for sub_id, num_el in enumerate(action_space.sub_info):
-            if num_el < 4:
-                pass
-
-            for tup in itertools.product(S, repeat=num_el - 1):
-                indx = np.full(shape=num_el, fill_value=False, dtype=dt_bool)
-                tup = np.array((0, *tup)).astype(dt_bool)  # add a zero to first element -> break symmetry
-                indx[tup] = True
-                if np.sum(indx) >= 2 and np.sum(~indx) >= 2:
-                    # i need 2 elements on each bus at least
+            already_set = set()
+            for tup_ in itertools.product(S, repeat=num_el):
+                if tup_ not in already_set:
+                    indx = np.full(shape=num_el, fill_value=False, dtype=dt_bool)
+                    # tup = np.array((0, *tup)).astype(dt_bool)  # add a zero to first element -> break symmetry
+                    tup = np.array(tup_).astype(dt_bool)  # add a zero to first element -> break symmetry
+                    indx[tup] = True
                     action = action_space({"change_bus": {"substations_id": [(sub_id, indx)]}})
+                    already_set.add(tup_)
+                    already_set.add(tuple([1-el for el in tup_]))
                     res.append(action)
+                # otherwise, the change has already beend added (NB by symmetry , if there are A, B, C and D in
+                # a substation, changing A,B or changing C,D always has the same effect.
         return res
 
     @staticmethod
@@ -450,7 +474,8 @@ class SerializableActionSpace(SerializableSpace):
                 tup = np.array((0, *tup)).astype(dt_bool)  # add a zero to first element -> break symmetry
                 indx[tup] = True
                 if np.sum(indx) >= 2 and np.sum(~indx) >= 2:
-                    # i need 2 elements on each bus at least
+                    # i need 2 elements on each bus at least (almost all the times, except when a powerline
+                    # is alone on its bus)
                     new_topo = np.full(shape=num_el, fill_value=1, dtype=dt_int)
                     new_topo[~indx] = 2
 
@@ -460,6 +485,13 @@ class SerializableActionSpace(SerializableSpace):
 
                     action = action_space({"set_bus": {"substations_id": [(sub_id, new_topo)]}})
                     tmp.append(action)
+                else:
+                    # i need to take into account the case where 1 powerline is alone on a bus too
+                    if np.sum(indx[powerlines_id]) >= 1 and np.sum(~indx[powerlines_id]) >= 1:
+                        new_topo = np.full(shape=num_el, fill_value=1, dtype=dt_int)
+                        new_topo[~indx] = 2
+                        action = action_space({"set_bus": {"substations_id": [(sub_id, new_topo)]}})
+                        tmp.append(action)
 
             if len(tmp) >= 2:
                 # if i have only one single topology on this substation, it doesn't make any action

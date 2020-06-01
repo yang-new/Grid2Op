@@ -8,9 +8,9 @@
 
 import os
 import numpy as np
-from datetime import timedelta
-import pdb
+from datetime import timedelta, datetime
 
+from grid2op.dtypes import dt_int
 from grid2op.Exceptions import *
 from grid2op.Chronics.GridValue import GridValue
 from grid2op.Chronics.GridStateFromFile import GridStateFromFile
@@ -53,10 +53,12 @@ class Multifolder(GridValue):
     """
     def __init__(self, path,
                  time_interval=timedelta(minutes=5),
+                 start_datetime=datetime(year=2019, month=1, day=1),
                  gridvalueClass=GridStateFromFile,
                  sep=";", max_iter=-1,
                  chunk_size=None):
-        GridValue.__init__(self, time_interval=time_interval, max_iter=max_iter, chunk_size=chunk_size)
+        GridValue.__init__(self, time_interval=time_interval, max_iter=max_iter, chunk_size=chunk_size,
+                           start_datetime=start_datetime)
         self.gridvalueClass = gridvalueClass
         self.data = None
         self.path = os.path.abspath(path)
@@ -68,7 +70,6 @@ class Multifolder(GridValue):
             self.subpaths = np.array(self.subpaths)
         except FileNotFoundError:
             raise ChronicsError("Path \"{}\" doesn't exists.".format(self.path)) from None
-
 
         if len(self.subpaths) == 0:
             raise ChronicsNotFoundError("Not chronics are found in \"{}\". Make sure there are at least "
@@ -101,6 +102,11 @@ class Multifolder(GridValue):
                                         path=self.subpaths[self.id_chron_folder_current],
                                         max_iter=self.max_iter,
                                         chunk_size=self.chunk_size)
+        if self.seed is not None:
+            max_int = np.iinfo(dt_int).max
+            seed_chronics = self.space_prng.randint(max_int)
+            self.data.seed(seed_chronics)
+
         self.data.initialize(order_backend_loads, order_backend_prods, order_backend_lines, order_backend_subs,
                              names_chronics_to_backend=names_chronics_to_backend)
 
